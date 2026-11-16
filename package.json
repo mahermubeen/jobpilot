@@ -3,24 +3,49 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 127.0.0.1",
     "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
+    "start": "next start -H 127.0.0.1",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "import:artifact": "tsx scripts/import-artifact.ts",
+    "prune:jobs": "tsx scripts/prune-jobs.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
+    "@electric-sql/pglite": "^0.5.9",
+    "@react-pdf/renderer": "^4.9.0",
+    "apify-client": "^2.25.0",
+    "drizzle-orm": "^0.45.4",
+    "imapflow": "^2.4.0",
     "next": "16.4.0",
+    "nodemailer": "^10.1.0",
+    "postgres": "^3.4.9",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "unpdf": "^1.8.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",
-    "@types/node": "^20",
+    "@types/node": "^24.19.2",
+    "@types/nodemailer": "^8.0.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "drizzle-kit": "^0.31.11",
     "eslint": "^9",
     "eslint-config-next": "16.4.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
-  }
+    "tsx": "^4.23.15",
+    "typescript": "^5",
+    "vitest": "^5.0.4"
+  },
+  "description": "Local-first job search: find jobs, find the people behind them, and apply with a tailored CV.",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "license": "UNLICENSED",
+  "author": "Mubeen Ahmad"
 }

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>JobPilot</title>
+<style>
+  :root { color-scheme: light dark; --line: #d5d9e2; --muted: #667085; --accent: #3b4cca; }
+  @media (prefers-color-scheme: dark) { :root { --line: #333a4d; --muted: #98a2b3; --accent: #7b8cff; } }
+  body { width: 340px; margin: 0; padding: 14px; font: 13px/1.45 system-ui, sans-serif; }
+  h1 { margin: 0 0 2px; font-size: 15px; }
+  p { margin: 0; color: var(--muted); }
+  label { display: grid; gap: 4px; margin-top: 12px; font-weight: 600; }
+  select, input[type="number"] { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; width: 100%; box-sizing: border-box; }
+  .row { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-weight: 600; }
+  button { margin-top: 14px; width: 100%; padding: 9px; font: inherit; font-weight: 700; color: #fff; background: var(--accent); border: 0; border-radius: 8px; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { margin-top: 10px; }
+  #status.bad { color: #d92d20; font-weight: 600; }
+  ul { margin: 10px 0 0; padding: 0; list-style: none; max-height: 220px; overflow: auto; }
+  li { padding: 3px 0 3px 14px; position: relative; overflow-wrap: anywhere; }
+  li::before { content: ""; position: absolute; left: 0; top: 9px; width: 8px; height: 8px; border-radius: 50%; background: #d97706; }
+  li.filled::before { background: #1f9d63; }
+  details { margin-top: 12px; color: var(--muted); }
+  details label { margin-top: 6px; font-weight: 400; }
+</style>
+</head>
+<body>
+  <h1>JobPilot form filler</h1>
+  <p>Fills this page of the application. You check the answers and press Submit.</p>
+  <label>Job
+    <select id="job"></select>
+  </label>
+  <div class="row"><input type="checkbox" id="cv" checked><label for="cv" style="margin:0;display:inline">Attach the tailored CV to résumé uploads</label></div>
+  <button id="fill" disabled>Fill this page</button>
+  <p id="status">Connecting to JobPilot…</p>
+  <ul id="results"></ul>
+  <details>
+    <summary>Settings</summary>
+    <label>JobPilot port <input type="number" id="port" min="1" max="65535"></label>
+  </details>
+  <script src="popup.js"></script>
+</body>
+</html>

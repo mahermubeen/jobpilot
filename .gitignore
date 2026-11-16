@@ -39,3 +39,20 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# jobpilot local data (database, secrets, generated CVs)
+/data/
+!.env.example
+
+# extra safety: keys, packed extensions, local databases, generated CVs, editor/agent local files
+*.key
+*.p12
+*.pfx
+*.crx
+*.sqlite
+*.sqlite3
+*.db
+/*.pdf
+.claude/settings.local.json
+.vscode/
+.idea/

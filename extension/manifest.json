@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "JobPilot form filler",
+  "version": "0.1.0",
+  "description": "Fills job application forms from your JobPilot CV and saved answers. You review and submit.",
+  "action": { "default_title": "Fill with JobPilot", "default_popup": "popup.html" },
+  "background": { "service_worker": "background.js" },
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://*.linkedin.com/*",
+    "https://*.indeed.com/*",
+    "https://*.greenhouse.io/*",
+    "https://*.lever.co/*",
+    "https://*.ashbyhq.com/*",
+    "https://*.workable.com/*",
+    "https://*.smartrecruiters.com/*",
+    "https://*.myworkdayjobs.com/*",
+    "https://*.bamboohr.com/*",
+    "https://*.breezy.hr/*",
+    "https://*.recruitee.com/*",
+    "https://*.teamtailor.com/*",
+    "https://*.wellfound.com/*"
+  ]
+}
