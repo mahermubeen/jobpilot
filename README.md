@@ -122,6 +122,13 @@ To try it safely, open `extension/test-form.html` in Chrome and press the icon.
 JobPilot must be running; if you changed its port, set the same port under
 Settings in the extension popup.
 
+JobPilot answers only its own extension. The key in `extension/manifest.json`
+gives it the same ID on every computer, so other extensions you have installed
+are refused, even for reads. If you loaded an older copy of the extension,
+reload it once in `chrome://extensions`: it gets the fixed ID, and its port and
+suggestion settings start fresh. Only if you pack your own build with another key,
+set its ID in `JOBPILOT_EXTENSION_ID` in `.env`.
+
 ## Requirements
 
 - **Node.js 20.19 or newer** ([nodejs.org](https://nodejs.org))
@@ -196,7 +203,8 @@ If you call UK numbers, check them against the TPS/CTPS register first.
 | `npm run dev` | Development server with reload |
 | `npm run build` then `npm start` | Production server on http://127.0.0.1:3000 (`PORT=4000 npm start` to change the port) |
 | `npm test` | Unit tests |
-| `npm run typecheck` / `npm run lint` | Type and lint checks |
+| `npm run typecheck` / `npm run lint` | Type and lint checks (lint includes the complexity, size and DSA limits, see below) |
+| `scripts/check.sh` / `scripts/check.sh --full` | The quality gate: fast (secrets, lint, types, tests), or full (adds build, audit and a history secret scan). CI and the pre-push hook run `--full` |
 | `npm run db:generate` | Create a migration after editing `lib/db/schema.ts` |
 | `npm run import:artifact -- <folder>` | Import jobs exported as one JSON file each |
 | `JOBPILOT_DATA_DIR=./demo-data npm run seed:demo` | Fill a new, empty data folder with fictional demo jobs, leads and drafts (then start the app with the same `JOBPILOT_DATA_DIR`) |
@@ -222,6 +230,13 @@ extension/           Chrome extension that fills application forms
 scripts/             one-off scripts
 tests/               unit tests
 ```
+
+### Code limits
+
+`npm run lint` fails on functions over 40 lines or with complexity over 10, nesting deeper than 3, more than 4
+parameters, files over 400 lines, `await` inside a loop, and `find()` inside a loop (build a Map first).
+The full list, and what is left to review instead of lint, is in `AGENTS.md`. Turn on the git hooks once
+with `git config core.hooksPath .githooks`: commits run the fast gate and pushes run the full one.
 
 ### Changing things
 
