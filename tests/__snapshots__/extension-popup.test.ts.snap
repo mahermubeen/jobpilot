@@ -1,0 +1,130 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`popup > fills the page, saves your answers and switches suggestions > everywhere 1`] = `
+[
+  true,
+  "true",
+  "Suggestions on everywhere · 4 form fields seen in the application window.",
+]
+`;
+
+exports[`popup > fills the page, saves your answers and switches suggestions > off 1`] = `
+[
+  false,
+  "Suggestions are off. Fill this page still works.",
+]
+`;
+
+exports[`popup > fills the page, saves your answers and switches suggestions > this page 1`] = `
+[
+  "true",
+  "Suggestions on for this page · 4 form fields seen in the application window.",
+]
+`;
+
+exports[`popup > lists saved jobs and picks the one the page matches > job list 1`] = `
+[
+  [
+    "",
+    "— not a saved job: use what this page says —",
+  ],
+  [
+    "job-1",
+    "Acme Widgets · Engineer",
+  ],
+]
+`;
+
+exports[`popup > offers to add the page as a job when it is not a saved one > job added from the page 1`] = `
+{
+  "company": "Initech",
+  "description": "Test things.",
+  "link": "https://jobs.example/apply/1",
+  "role": "QA Engineer",
+  "source": "Extension",
+  "status": "Found",
+}
+`;
+
+exports[`popup > sends the form's layout without anything typed into it > layout sent 1`] = `"<svg/><input name="n"><textarea></textarea>"`;
+
+exports[`popup > shows each state of the last fill > done 1`] = `
+[
+  "Last fill · just now · Acme Widgets · Engineer
+From the application page you were on before.
+Filled 6 of 9 · 2 required left for you (amber) · 1 optional left empty. Check everything before you submit.",
+  "",
+  false,
+  false,
+]
+`;
+
+exports[`popup > shows each state of the last fill > done report 1`] = `
+[
+  "div.ai used: AI used for 1 answer · 2 calls · 12,400 tokens in / 312 out | [call] Claude · m · answers · 100 → 20 tokens · 1.5 s",
+  "div.learned bad: Could not save your own answers: Database is busy.",
+  "div.learned: Saved to your record (1) — next time these fill themselves: | [call] City → Springfield, OR | Open the record in JobPilot",
+  "h2.: Required — fill these (2)",
+  "ul.: Citypick it from the list | Portfoliono answer found",
+  "h2.: Written by AI (1)",
+  "ul.: [filled] AIWhy this job?I like it.",
+  "h2.: From the record (answered before) (1)",
+  "ul.: [filled] recordNotice2 weeks",
+  "h2.: Your own answers (1)",
+  "ul.: [filled] yoursVisaNo",
+  "h2.: Answer bank (your facts, no AI) (1)",
+  "ul.: [filled] bankYears with React5",
+  "h2.: From your CV (2)",
+  "ul.: [filled] CVFirst nameAlex | [filled] CVPhone+1 555 0100",
+  "h2.: Optional — fine to leave empty (1)",
+  "ul.: [skipped] (unlabelled field)optional",
+  "h2.: Left empty on purpose (2)",
+  "ul.: [skipped] Marketing emailsmarketing opt-in | [skipped] Referreroptional",
+]
+`;
+
+exports[`popup > shows each state of the last fill > error 1`] = `
+[
+  "Last fill (2 min ago) failed: Add your CV first.",
+  "bad",
+  false,
+  true,
+]
+`;
+
+exports[`popup > shows each state of the last fill > no AI 1`] = `
+[
+  "Last fill · just now · Acme Widgets · Engineer
+From the application page you were on before.
+Filled 1 of 1 · every required field is filled. Check everything before you submit.",
+  "",
+  false,
+  false,
+]
+`;
+
+exports[`popup > shows each state of the last fill > no AI report 1`] = `
+[
+  "div.ai none: No AI used — every answer came from your CV, facts and record.",
+  "h2.: From your CV (1)",
+  "ul.: [filled] CVFirst nameAlex",
+]
+`;
+
+exports[`popup > shows each state of the last fill > note 1`] = `
+[
+  "No empty fields found on this page.",
+  "",
+  false,
+  false,
+]
+`;
+
+exports[`popup > shows each state of the last fill > running 1`] = `
+[
+  "Filling this page… You can close this window; the result will be here when you open it again.",
+  "",
+  true,
+  true,
+]
+`;

@@ -1,0 +1,289 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`background: learning from the page > saves answers, keeps the newest per question and records an error > report after learning 1`] = `
+{
+  "jobId": "job-1",
+  "learnError": "",
+  "learned": [
+    {
+      "answer": "Springfield",
+      "at": 1795168800000,
+      "question": "City",
+    },
+    {
+      "answer": "2 weeks",
+      "at": 1,
+      "question": "Notice",
+    },
+  ],
+}
+`;
+
+exports[`background: one Fill press > reads every frame, asks for answers, attaches the CV, fills each frame and reports > answers per frame 1`] = `
+[
+  [
+    [
+      0,
+    ],
+    [
+      {
+        "id": "jp1",
+        "rule": undefined,
+        "source": "profile",
+        "value": "Alex",
+      },
+      {
+        "id": "jp2",
+        "rule": undefined,
+        "source": "cv",
+        "value": null,
+      },
+      {
+        "id": "jp3",
+        "rule": undefined,
+        "source": "bank",
+        "value": "LinkedIn",
+      },
+    ],
+  ],
+  [
+    [
+      3,
+    ],
+    [
+      {
+        "id": "jp1",
+        "rule": undefined,
+        "source": "ai",
+        "value": "I like the product.",
+      },
+      {
+        "id": "jp3",
+        "rule": undefined,
+        "source": "none",
+        "value": null,
+      },
+    ],
+  ],
+]
+`;
+
+exports[`background: one Fill press > reads every frame, asks for answers, attaches the CV, fills each frame and reports > banners 1`] = `
+[
+  [
+    "Writing answers for 6 fields…",
+    "",
+  ],
+  [
+    "Filled 3 fields (green).
+1 required left for you (amber): 0/jp3
+1 optional left empty: 3/jp3
+1 profile · 1 answer bank · 1 AI
+AI: 1 call · 12k tokens in / 312 out (Claude Code)
+Anything you type or pick yourself is saved for next time.",
+    "",
+  ],
+]
+`;
+
+exports[`background: one Fill press > reads every frame, asks for answers, attaches the CV, fills each frame and reports > reply 1`] = `
+{
+  "results": [
+    {
+      "label": "0/jp1",
+      "required": false,
+      "source": "x",
+      "status": "filled",
+      "value": "Alex",
+    },
+    {
+      "label": "0/jp2",
+      "required": false,
+      "source": "x",
+      "status": "filled",
+      "value": "",
+    },
+    {
+      "label": "0/jp3",
+      "required": false,
+      "source": "x",
+      "status": "check",
+      "value": "LinkedIn",
+    },
+    {
+      "label": "3/jp1",
+      "required": true,
+      "source": "x",
+      "status": "filled",
+      "value": "I like the product.",
+    },
+    {
+      "label": "3/jp3",
+      "required": false,
+      "source": "x",
+      "status": "blank",
+      "value": "",
+    },
+    {
+      "label": "Send me marketing emails",
+      "rule": "marketing-optin",
+      "source": "bank",
+      "status": "skipped",
+      "value": "",
+    },
+  ],
+  "stats": {
+    "ai": 1,
+    "aiCalls": 1,
+    "aiName": "Claude Code",
+    "bank": 1,
+    "inTokens": 12400,
+    "outTokens": 312,
+    "profile": 1,
+  },
+}
+`;
+
+exports[`background: one Fill press > reads every frame, asks for answers, attaches the CV, fills each frame and reports > requests to JobPilot 1`] = `
+[
+  {
+    "body": {
+      "fields": [
+        {
+          "id": "0:jp1",
+          "label": "First name",
+          "required": true,
+          "type": "text",
+        },
+        {
+          "id": "0:jp2",
+          "label": "Resume/CV",
+          "required": true,
+          "type": "file",
+        },
+        {
+          "id": "0:jp3",
+          "label": "Hear about us",
+          "options": [
+            "LinkedIn",
+            "Other",
+          ],
+          "type": "select",
+        },
+        {
+          "id": "3:jp1",
+          "label": "Why this job?",
+          "required": true,
+          "type": "textarea",
+        },
+        {
+          "id": "3:jp2",
+          "label": "Send me marketing emails",
+          "type": "checkbox",
+        },
+        {
+          "id": "3:jp3",
+          "label": "Referrer",
+          "type": "text",
+        },
+      ],
+      "forceAi": false,
+      "jobId": "job-1",
+      "page": null,
+    },
+    "method": "POST",
+    "path": "/api/apply/answers",
+  },
+  {
+    "body": undefined,
+    "method": "GET",
+    "path": "/api/apply/answers?ticket=t-1",
+  },
+  {
+    "body": undefined,
+    "method": "GET",
+    "path": "/api/apply/answers?ticket=t-1",
+  },
+  {
+    "body": undefined,
+    "method": "GET",
+    "path": "/api/jobs/job-1/cv",
+  },
+]
+`;
+
+exports[`background: one Fill press > reads every frame, asks for answers, attaches the CV, fills each frame and reports > saved report 1`] = `
+{
+  "at": 1795168800800,
+  "job": "Acme Widgets · Engineer",
+  "jobId": "job-1",
+  "page": null,
+  "results": [
+    {
+      "label": "0/jp1",
+      "required": false,
+      "source": "x",
+      "status": "filled",
+      "value": "Alex",
+    },
+    {
+      "label": "0/jp2",
+      "required": false,
+      "source": "x",
+      "status": "filled",
+      "value": "",
+    },
+    {
+      "label": "0/jp3",
+      "required": false,
+      "source": "x",
+      "status": "check",
+      "value": "LinkedIn",
+    },
+    {
+      "label": "3/jp1",
+      "required": true,
+      "source": "x",
+      "status": "filled",
+      "value": "I like the product.",
+    },
+    {
+      "label": "3/jp3",
+      "required": false,
+      "source": "x",
+      "status": "blank",
+      "value": "",
+    },
+    {
+      "label": "Send me marketing emails",
+      "rule": "marketing-optin",
+      "source": "bank",
+      "status": "skipped",
+      "value": "",
+    },
+  ],
+  "stats": {
+    "ai": 1,
+    "aiCalls": 1,
+    "aiName": "Claude Code",
+    "bank": 1,
+    "inTokens": 12400,
+    "outTokens": 312,
+    "profile": 1,
+  },
+  "status": "done",
+  "url": "https://jobs.example/apply/1#top",
+}
+`;
+
+exports[`background: one Fill press > uses what the page says about the job when it is not a saved one > page read from the tab 1`] = `
+{
+  "company": "Globex",
+  "description": "Build things.
+Node
+Postgres
+",
+  "role": "Platform Engineer",
+  "url": "http://localhost:3000/",
+}
+`;

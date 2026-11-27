@@ -1,0 +1,14 @@
+# Gitleaks settings: every default rule, plus one narrow exception.
+[extend]
+useDefault = true
+
+# extension/manifest.json carries the extension's PUBLIC key ("key"). Chrome
+# uses it only to give the unpacked extension a fixed ID; it unlocks nothing.
+# The exception needs all three: this file, the "key" field, and a value that
+# is an RSA public key (base64 DER starts with MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A).
+[[allowlists]]
+description = "Chrome extension public key (not a secret)"
+condition = "AND"
+paths = ['''^extension/manifest\.json$''']
+regexTarget = "line"
+regexes = ['''^\s*"key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A[A-Za-z0-9+/=]+",?$''']

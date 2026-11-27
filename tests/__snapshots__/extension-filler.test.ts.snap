@@ -1,0 +1,500 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`filling a form > writes answers into every field type and reports each one 1`] = `
+[
+  {
+    "label": "First name",
+    "required": true,
+    "rule": "",
+    "source": "profile",
+    "status": "filled",
+    "value": "Alex",
+  },
+  {
+    "label": "Email address",
+    "required": false,
+    "rule": "",
+    "source": "profile",
+    "status": "filled",
+    "value": "alex@example.com",
+  },
+  {
+    "label": "Phone",
+    "required": false,
+    "rule": "",
+    "source": "profile",
+    "status": "filled",
+    "value": "+1 555 0100",
+  },
+  {
+    "label": "How many years of experience do you have with React?",
+    "required": false,
+    "rule": "",
+    "source": "bank",
+    "status": "filled",
+    "value": "5",
+  },
+  {
+    "label": "What is your expected salary?",
+    "required": false,
+    "rule": "",
+    "source": "bank",
+    "status": "filled",
+    "value": "100000",
+  },
+  {
+    "label": "Country",
+    "required": false,
+    "rule": "",
+    "source": "bank",
+    "status": "filled",
+    "value": "United States",
+  },
+  {
+    "label": "Are you legally authorised to work in Pakistan?",
+    "required": false,
+    "rule": "",
+    "source": "bank",
+    "status": "filled",
+    "value": "Yes",
+  },
+  {
+    "label": "Which of these have you used in production?",
+    "required": false,
+    "rule": "",
+    "source": "bank",
+    "status": "filled",
+    "value": "Node.js, Rust",
+  },
+  {
+    "label": "I agree to the privacy policy",
+    "required": false,
+    "rule": "",
+    "source": "bank",
+    "status": "filled",
+    "value": "ticked",
+  },
+  {
+    "label": "Why do you want this job?",
+    "required": false,
+    "rule": "",
+    "source": "ai",
+    "status": "filled",
+    "value": "I like the product.",
+  },
+  {
+    "label": "City",
+    "required": false,
+    "rule": "",
+    "source": "bank",
+    "status": "filled",
+    "value": "Springfield",
+  },
+  {
+    "label": "How much production experience do you have with Expo / EAS?",
+    "required": false,
+    "rule": "",
+    "source": "bank",
+    "status": "filled",
+    "value": "1–2 years in production apps",
+  },
+  {
+    "label": "Please respond truthfully. How many years of hands-on experience do you have developing production applications using Re",
+    "required": true,
+    "rule": "",
+    "source": "bank",
+    "status": "filled",
+    "value": "5–7 years — I have solid experience.",
+  },
+  {
+    "label": "A question only you can answer",
+    "required": true,
+    "rule": "",
+    "source": "none",
+    "status": "blank",
+    "value": "",
+  },
+  {
+    "label": "Resume/CV",
+    "required": false,
+    "rule": "",
+    "source": "cv",
+    "status": "filled",
+    "value": "cv.pdf",
+  },
+]
+`;
+
+exports[`filling a form > writes answers into every field type and reports each one 2`] = `
+[
+  "first:Alex:#1f9d63 solid 2px",
+  "last::",
+  "em:alex@example.com:#1f9d63 solid 2px",
+  "phone:+1 555 0100:#1f9d63 solid 2px",
+  "linkedin::",
+  "kept:keep me:",
+  "react:5:#1f9d63 solid 2px",
+  "salary:100000:#1f9d63 solid 2px",
+  "country:us:#1f9d63 solid 2px",
+  "auth:true:#1f9d63 solid 2px",
+  "auth:false:",
+  "stack:false:#1f9d63 solid 2px",
+  "stack:true:",
+  "stack:true:",
+  "terms:true:#1f9d63 solid 2px",
+  "why:I like the product.:#1f9d63 solid 2px",
+  "city:Springfield:#1f9d63 solid 2px",
+  "expo:false:#1f9d63 solid 2px",
+  "expo:true:",
+  "expo:false:",
+  "rn:false:#1f9d63 solid 2px",
+  "rn:true:",
+  "rn:false:",
+  "mine::#d97706 solid 2px",
+  "twitter::",
+  "resume:/fake/path/cv.pdf:#1f9d63 solid 2px",
+  "token:x:",
+  "pw::",
+]
+`;
+
+exports[`learning your own answers > keeps a watched field's starting value and sends only a change to it 1`] = `
+{
+  "items": [
+    {
+      "label": "Level",
+      "options": [
+        "Junior",
+        "Senior",
+      ],
+      "type": "select",
+      "value": "Junior",
+    },
+  ],
+  "type": "learn",
+}
+`;
+
+exports[`learning your own answers > sends answers you typed or changed after a fill, once 1`] = `
+[
+  {
+    "items": [
+      {
+        "label": "Country",
+        "options": [
+          "Pakistan",
+          "United States",
+        ],
+        "type": "select",
+        "value": "Pakistan",
+      },
+      {
+        "label": "A question only you can answer",
+        "options": undefined,
+        "type": "text",
+        "value": "Only I know this",
+      },
+      {
+        "label": "Are you legally authorised to work in Pakistan?",
+        "options": [
+          "Yes",
+          "No",
+        ],
+        "type": "radio",
+        "value": "No",
+      },
+    ],
+    "type": "learn",
+  },
+  {
+    "items": [
+      {
+        "label": "First name",
+        "options": undefined,
+        "type": "text",
+        "value": "Alexandra",
+      },
+    ],
+    "type": "learn",
+  },
+]
+`;
+
+exports[`reading a form > marks required questions from a star, a required class or aria-required 1`] = `
+[
+  [
+    "Start date",
+    "date",
+    true,
+    null,
+  ],
+  [
+    "Preferred name",
+    "text",
+    true,
+    null,
+  ],
+  [
+    "Hobbies",
+    "textarea",
+    false,
+    200,
+  ],
+  [
+    "Open to contract work?",
+    "radio",
+    true,
+    null,
+  ],
+]
+`;
+
+exports[`reading a form > reads every field type on the test form 1`] = `
+{
+  "fields": [
+    {
+      "id": "jp1",
+      "label": "First name",
+      "maxLength": undefined,
+      "required": true,
+      "type": "text",
+    },
+    {
+      "id": "jp2",
+      "label": "Last name",
+      "maxLength": undefined,
+      "required": false,
+      "type": "text",
+    },
+    {
+      "id": "jp3",
+      "label": "Email address",
+      "maxLength": undefined,
+      "required": false,
+      "type": "email",
+    },
+    {
+      "id": "jp4",
+      "label": "Phone",
+      "maxLength": undefined,
+      "required": false,
+      "type": "tel",
+    },
+    {
+      "id": "jp5",
+      "label": "LinkedIn profile",
+      "maxLength": undefined,
+      "required": false,
+      "type": "url",
+    },
+    {
+      "id": "jp7",
+      "label": "How many years of experience do you have with React?",
+      "maxLength": undefined,
+      "required": false,
+      "type": "number",
+    },
+    {
+      "id": "jp8",
+      "label": "What is your expected salary?",
+      "maxLength": undefined,
+      "required": false,
+      "type": "text",
+    },
+    {
+      "id": "jp9",
+      "label": "Country",
+      "options": [
+        "Pakistan",
+        "United States",
+      ],
+      "required": false,
+      "type": "select",
+    },
+    {
+      "id": "jp10",
+      "label": "Why do you want this job?",
+      "maxLength": 600,
+      "required": false,
+      "type": "textarea",
+    },
+    {
+      "id": "jp11",
+      "label": "City",
+      "maxLength": undefined,
+      "required": false,
+      "type": "text",
+    },
+    {
+      "id": "jp12",
+      "label": "A question only you can answer",
+      "maxLength": undefined,
+      "required": true,
+      "type": "text",
+    },
+    {
+      "id": "jp13",
+      "label": "Twitter URL (optional)",
+      "maxLength": undefined,
+      "required": false,
+      "type": "url",
+    },
+    {
+      "id": "jp14",
+      "label": "Resume/CV",
+      "required": false,
+      "type": "file",
+    },
+    {
+      "id": "jp15",
+      "label": "Are you legally authorised to work in Pakistan?",
+      "options": [
+        "Yes",
+        "No",
+      ],
+      "required": false,
+      "type": "radio",
+    },
+    {
+      "id": "jp16",
+      "label": "Which of these have you used in production?",
+      "options": [
+        "React Native",
+        "Rust",
+        "Node.js",
+      ],
+      "required": false,
+      "type": "checkbox",
+    },
+    {
+      "id": "jp17",
+      "label": "I agree to the privacy policy",
+      "required": false,
+      "type": "checkbox",
+    },
+    {
+      "id": "jp18",
+      "label": "How much production experience do you have with Expo / EAS?",
+      "options": [
+        "Limited exposure — only personal projects",
+        "1–2 years in production apps",
+        "3+ years in production apps",
+      ],
+      "required": false,
+      "type": "radio",
+    },
+    {
+      "id": "jp19",
+      "label": "Please respond truthfully. How many years of hands-on experience do you have developing production applications using React Native?Please respond truthfully. How many years of hands-on experience do you have developing production applications using React Native?",
+      "options": [
+        "Less than 5 years — I have limited hands-on experience.",
+        "5–7 years — I have solid experience.",
+        "More than 7 years — I have extensive experience.",
+      ],
+      "required": true,
+      "type": "radio",
+    },
+  ],
+  "wantsCv": true,
+}
+`;
+
+exports[`reading a form > reads fields inside an open shadow root and skips filled ones 1`] = `
+{
+  "fields": [
+    {
+      "id": "jp25",
+      "label": "Shadow city",
+      "maxLength": undefined,
+      "required": false,
+      "type": "text",
+    },
+  ],
+  "wantsCv": false,
+}
+`;
+
+exports[`reading a form > reads only the fields inside an open dialog 1`] = `
+{
+  "fields": [
+    {
+      "id": "jp20",
+      "label": "Full name",
+      "maxLength": undefined,
+      "required": true,
+      "type": "text",
+    },
+    {
+      "id": "jp21",
+      "label": "Notice period",
+      "options": [
+        "2 weeks",
+        "1 month",
+      ],
+      "required": true,
+      "type": "select",
+    },
+  ],
+  "wantsCv": false,
+}
+`;
+
+exports[`suggestions > asks the AI from a chip when every suggestion is shown > learned chip 1`] = `
+[
+  "chip: JobPilotrecordYesFill✕",
+]
+`;
+
+exports[`suggestions > asks the AI from the list, and shows its error when it has none > AI answer offered 1`] = `
+[
+  "menu: JobPilotAIA search engine for recipes.✨ Ask AI for this answer",
+]
+`;
+
+exports[`suggestions > asks the AI from the list, and shows its error when it has none > AI error 1`] = `
+[
+  "menu: JobPilot✨ Ask AI for this answerNo AI is set up.",
+]
+`;
+
+exports[`suggestions > asks the AI from the list, and shows its error when it has none > asking 1`] = `
+[
+  "menu: JobPilotAsking AI…",
+]
+`;
+
+exports[`suggestions > shows a chip for a known option answer and a list for a text box > chip after filling 1`] = `
+[
+  "chip done: JobPilot✓ Filled",
+]
+`;
+
+exports[`suggestions > shows a chip for a known option answer and a list for a text box > chip for the radio question 1`] = `
+[
+  "chip: JobPilotyoursNoFill✕",
+]
+`;
+
+exports[`suggestions > shows a chip for a known option answer and a list for a text box > list for the text box 1`] = `
+[
+  "chip: JobPilotyoursNoFill✕",
+  "menu: JobPilotCVAlexyoursAl✨ Ask AI for this answer",
+]
+`;
+
+exports[`suggestions > shows a chip for a known option answer and a list for a text box 1`] = `
+[
+  [
+    "Preferred name",
+    "text",
+  ],
+  [
+    "Open to relocation?",
+    "radio",
+  ],
+  [
+    "Need a visa?",
+    "radio",
+  ],
+]
+`;

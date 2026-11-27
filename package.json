@@ -38,6 +38,7 @@
     "drizzle-kit": "^0.31.11",
     "eslint": "^9",
     "eslint-config-next": "16.4.6",
+    "happy-dom": "21.0.4",
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5",
@@ -48,5 +49,8 @@
     "node": ">=20.19"
   },
   "license": "MIT",
-  "author": "Mubeen Ahmad"
+  "author": "Mubeen Ahmad",
+  "overrides": {
+    "basic-ftp": "^6.2.6"
+  }
 }

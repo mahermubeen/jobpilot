@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "JobPilot form filler",
   "version": "0.3.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApXsehTXJGO1y6LUFDFJY9/oUeMEvGG+a6v+2b/KYjNU5MYhI1ufu3WfBYKTWeUHZ7ur79imHQU8QrbBVDGeY8I66zJGrW7m0KnCtreZrMcPxRVQ94+jVwsJy+/cwNV7uXBdQW7J8J4S9QXdq84v0eeUa9/smU845tkAd8xOzqUb63kLzxkYH4cu2APxFObcLGu3veErNcZsnykBXqjf4vMNhVZKCFqdy+d3dqkt/QPclcOk6b9sofMHs+GBUFF6GkeazizB8XgQ1Pgy2l6uohWJYAG/IQU5XLunR/lC6B10InIG0TyBALQDQe4rRoT2MJfY/8X5l/ln99YKlQimJZQIDAQAB",
   "description": "Fills job application forms from your JobPilot CV and saved answers. You review and submit.",
   "action": {
     "default_title": "Fill with JobPilot",
@@ -51,6 +52,10 @@
         "https://*.wellfound.com/*"
       ],
       "js": [
+        "filler-dom.js",
+        "filler-form.js",
+        "filler-learn.js",
+        "filler-suggest.js",
         "filler.js"
       ],
       "run_at": "document_idle",

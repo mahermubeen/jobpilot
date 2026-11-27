@@ -15,44 +15,65 @@ const HOW = {
 const NO_JOB =
   "Not one of your saved jobs. Fill reads the role and company from this page and answers from your CV and record. Pick a saved job above to use its tailored CV.";
 
+// The page scripts, in the order manifest.json loads them on job sites.
+const FILLER_FILES = chrome.runtime.getManifest().content_scripts[0].js;
+
+const getPort = async () => (await chrome.storage.local.get({ port: 3000 })).port;
+
+// The background decides which job a tab is for, so the popup, Fill and the
+// suggestions under fields always agree.
+async function loadContext(port) {
+  const mine = await chrome.runtime.sendMessage({ type: "tabJob", tabId: tab.id, url: tab.url || "" }).catch(() => null);
+  const mineId = mine && mine.id;
+  const q = `url=${encodeURIComponent(tab?.url || "")}${mineId ? `&id=${encodeURIComponent(mineId)}` : ""}`;
+  const res = await fetch(`http://127.0.0.1:${port}/api/apply/context?${q}`);
+  const ctx = await res.json();
+  if (!res.ok) throw new Error(ctx.error || "JobPilot answered with an error.");
+  return { mine, ctx, chosen: ctx.picked || (mineId ? null : ctx.job) };
+}
+
+/** The job list: "not a saved job" first, then the chosen job if it is not listed, then the rest. */
+function fillJobList(ctx, chosen) {
+  const listed = new Set(ctx.jobs.map((j) => j.id));
+  const jobs = chosen && !listed.has(chosen.id) ? [chosen, ...ctx.jobs] : ctx.jobs;
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "— not a saved job: use what this page says —";
+  $("job").append(none);
+  for (const j of jobs) {
+    const o = document.createElement("option");
+    o.value = j.id;
+    o.textContent = `${j.company} · ${j.role}`;
+    $("job").append(o);
+  }
+  $("job").value = chosen ? chosen.id : "";
+}
+
+function showContext({ mine, ctx, chosen }) {
+  if (!ctx.profileReady) return status("Add your CV in JobPilot Settings first.", true);
+  $("fill").disabled = false;
+  if (!chosen) {
+    $("addJob").hidden = false;
+    return status(NO_JOB);
+  }
+  status(HOW[mine && mine.how] || HOW.url);
+}
+
+const errorText = (err) => (err instanceof TypeError ? "JobPilot is not running. Start it with npm start." : String(err.message || err));
+
 async function connect() {
-  const { port } = await chrome.storage.local.get({ port: 3000 });
+  const port = await getPort();
   $("port").value = port;
   [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   $("fill").disabled = true;
   $("addJob").hidden = true;
   $("job").replaceChildren();
   try {
-    // The background decides which job a tab is for, so the popup, Fill and the
-    // suggestions under fields always agree.
-    const mine = await chrome.runtime.sendMessage({ type: "tabJob", tabId: tab.id, url: tab.url || "" }).catch(() => null);
-    const q = `url=${encodeURIComponent(tab?.url || "")}${mine && mine.id ? `&id=${encodeURIComponent(mine.id)}` : ""}`;
-    const res = await fetch(`http://127.0.0.1:${port}/api/apply/context?${q}`);
-    const ctx = await res.json();
-    if (!res.ok) throw new Error(ctx.error || "JobPilot answered with an error.");
-    const chosen = ctx.picked || (mine && mine.id ? null : ctx.job);
-    const jobs = chosen && !ctx.jobs.some((j) => j.id === chosen.id) ? [chosen, ...ctx.jobs] : ctx.jobs;
-
-    const none = document.createElement("option");
-    none.value = "";
-    none.textContent = "— not a saved job: use what this page says —";
-    $("job").append(none);
-    for (const j of jobs) {
-      const o = document.createElement("option");
-      o.value = j.id;
-      o.textContent = `${j.company} · ${j.role}`;
-      $("job").append(o);
-    }
-    $("job").value = chosen ? chosen.id : "";
-    if (!ctx.profileReady) return status("Add your CV in JobPilot Settings first.", true);
-    $("fill").disabled = false;
-    if (!chosen) {
-      $("addJob").hidden = false;
-      return status(NO_JOB);
-    }
-    status(HOW[mine && mine.how] || HOW.url);
+    const found = await loadContext(port);
+    fillJobList(found.ctx, found.chosen);
+    showContext(found);
   } catch (err) {
-    status(err instanceof TypeError ? "JobPilot is not running. Start it with npm start." : String(err.message || err), true);
+    status(errorText(err), true);
   }
 }
 
@@ -64,21 +85,25 @@ $("job").addEventListener("change", async () => {
   status(id ? "This tab now uses the job you picked." : NO_JOB);
 });
 
+/** Saves the job this page shows to JobPilot, read the same way Fill reads a page that is not a saved job. */
+async function addPageAsJob() {
+  const page = await chrome.runtime.sendMessage({ type: "readPage", tabId: tab.id });
+  if (!page || page.error) throw new Error((page && page.error) || "could not read this page");
+  const link = (tab.url || "").split("#")[0];
+  const r = await fetch(`http://127.0.0.1:${await getPort()}/api/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ company: page.company, role: page.role, link, description: page.description, source: "Extension", status: "Found" }),
+  });
+  const body = await r.json();
+  if (!r.ok) throw new Error(body.error || r.status);
+  return { page, body };
+}
+
 // Adds the job on this page to JobPilot from what the page shows, and uses it.
 $("addJob").addEventListener("click", async () => {
   try {
-    // Read the same way Fill reads a page that is not a saved job.
-    const page = await chrome.runtime.sendMessage({ type: "readPage", tabId: tab.id });
-    if (!page || page.error) throw new Error((page && page.error) || "could not read this page");
-    const { port } = await chrome.storage.local.get({ port: 3000 });
-    const link = (tab.url || "").split("#")[0];
-    const r = await fetch(`http://127.0.0.1:${port}/api/jobs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ company: page.company, role: page.role, link, description: page.description, source: "Extension", status: "Found" }),
-    });
-    const body = await r.json();
-    if (!r.ok) throw new Error(body.error || r.status);
+    const { page, body } = await addPageAsJob();
     await chrome.runtime.sendMessage({ type: "setTabJob", tabId: tab.id, jobId: body.id });
     await connect();
     status(
@@ -97,9 +122,11 @@ $("port").addEventListener("change", async () => {
 });
 
 const fmt = (n) => Number(n || 0).toLocaleString();
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const ago = (at) => {
   const s = Math.round((Date.now() - at) / 1000);
-  return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+  if (s < 60) return "just now";
+  return s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
 };
 const el = (tag, cls, text) => {
   const e = document.createElement(tag);
@@ -119,87 +146,131 @@ const GROUPS = [
   { key: "optional", title: "Optional — fine to leave empty", tag: "" },
   { key: "skipped", title: "Left empty on purpose", tag: "" },
 ];
-const groupOf = (r) =>
-  r.status === "skipped" ? "skipped"
-  : r.status === "check" || (r.status !== "filled" && r.required) ? "required"
-  : r.status !== "filled" ? "optional"
-  : r.source && r.source !== "none" ? r.source : "profile";
+function groupOf(r) {
+  if (r.status === "skipped") return "skipped";
+  if (r.status === "check" || (r.status !== "filled" && r.required)) return "required";
+  if (r.status !== "filled") return "optional";
+  return r.source && r.source !== "none" ? r.source : "profile";
+}
+
+/** Each result under its group, grouped once. */
+function byGroup(results) {
+  const groups = new Map();
+  for (const r of results) {
+    const g = groupOf(r);
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(r);
+  }
+  return groups;
+}
+
+// A report that is not a finished fill: say what it is and stop.
+function renderState(report) {
+  if (report.status === "running") {
+    $("fill").disabled = true;
+    status("Filling this page… You can close this window; the result will be here when you open it again.");
+    return true;
+  }
+  $("fill").disabled = false;
+  if (report.status === "error") {
+    status(`Last fill (${ago(report.at)}) failed: ${report.error}`, true);
+    return true;
+  }
+  if (report.note) {
+    status(report.note);
+    return true;
+  }
+  return false;
+}
+
+function summary(report, results, groups) {
+  const count = (g) => (groups.get(g) || []).length;
+  const filled = results.filter((r) => r.status === "filled").length;
+  const required = count("required");
+  const optional = count("optional");
+  const elsewhere = tab && report.url && report.url !== tab.url ? "\nFrom the application page you were on before." : "";
+  return (
+    `Last fill · ${ago(report.at)}${report.job ? ` · ${report.job}` : ""}${elsewhere}\n` +
+    `Filled ${filled} of ${results.length - count("skipped")}` +
+    (required ? ` · ${required} required left for you (amber)` : " · every required field is filled") +
+    (optional ? ` · ${optional} optional left empty` : "") +
+    ". Check everything before you submit."
+  );
+}
+
+function aiBox(st, results) {
+  const box = el("div", "ai " + (st.aiCalls ? "used" : "none"));
+  const aiFields = results.filter((r) => r.source === "ai" && r.status === "filled").length;
+  box.append(
+    el("b", "", st.aiCalls
+      ? `AI used for ${plural(aiFields, "answer")} · ${plural(st.aiCalls, "call")} · ${fmt(st.inTokens)} tokens in / ${fmt(st.outTokens)} out`
+      : "No AI used — every answer came from your CV, facts and record."),
+  );
+  for (const c of st.calls || []) {
+    box.append(el("div", "call", `${c.ai} · ${c.model} · ${c.purpose} · ${fmt(c.inTokens)} → ${fmt(c.outTokens)} tokens · ${(c.ms / 1000).toFixed(1)} s`));
+  }
+  return box;
+}
+
+function learnedBox(learned) {
+  const box = el("div", "learned");
+  box.append(el("b", "", `Saved to your record (${learned.length}) — next time these fill themselves:`));
+  for (const x of learned) box.append(el("div", "call", `${x.question} → ${[].concat(x.answer).join(", ")}`));
+  const link = el("a", "", "Open the record in JobPilot");
+  link.href = "#";
+  link.addEventListener("click", async (e) => {
+    e.preventDefault();
+    chrome.tabs.create({ url: `http://127.0.0.1:${await getPort()}/settings?tab=answers` });
+  });
+  box.append(link);
+  return box;
+}
+
+// The short note after a field's question.
+function noteFor(r) {
+  if (r.status === "check") return "pick it from the list";
+  if (r.status === "blank") return r.required ? "no answer found" : "optional";
+  if (r.status === "skipped") return r.rule === "marketing-optin" ? "marketing opt-in" : "optional";
+  return r.value;
+}
+
+function resultRow(r, g) {
+  const li = el("li", r.status === "filled" ? "filled" : g.key === "required" ? "" : "skipped");
+  if (g.tag) li.append(el("span", "tag " + g.key, g.tag));
+  li.append(el("span", "q", r.label || "(unlabelled field)"));
+  const note = noteFor(r);
+  if (note) li.append(el("span", "a", note));
+  return li;
+}
 
 function render(report) {
   $("report").replaceChildren();
   if (!report || !report.status) return;
   $("learn").hidden = report.status !== "done";
-  if (report.status === "running") {
-    $("fill").disabled = true;
-    return status("Filling this page… You can close this window; the result will be here when you open it again.");
-  }
-  $("fill").disabled = false;
-  if (report.status === "error") return status(`Last fill (${ago(report.at)}) failed: ${report.error}`, true);
-  if (report.note) return status(report.note);
+  if (renderState(report)) return;
 
   const results = report.results || [];
-  const st = report.stats || {};
-  const filled = results.filter((r) => r.status === "filled").length;
-  const required = results.filter((r) => groupOf(r) === "required").length;
-  const optional = results.filter((r) => groupOf(r) === "optional").length;
-  const elsewhere = tab && report.url && report.url !== tab.url ? "\nFrom the application page you were on before." : "";
-  status(
-    `Last fill · ${ago(report.at)}${report.job ? ` · ${report.job}` : ""}${elsewhere}\n` +
-      `Filled ${filled} of ${results.length - results.filter((r) => r.status === "skipped").length}` +
-      (required ? ` · ${required} required left for you (amber)` : " · every required field is filled") +
-      (optional ? ` · ${optional} optional left empty` : "") +
-      ". Check everything before you submit.",
-  );
+  const groups = byGroup(results);
+  status(summary(report, results, groups));
+  $("report").append(aiBox(report.stats || {}, results));
+  renderLearned(report);
+  renderGroups(groups);
+}
 
-  const aiBox = el("div", "ai " + (st.aiCalls ? "used" : "none"));
-  const aiFields = results.filter((r) => r.source === "ai" && r.status === "filled").length;
-  aiBox.append(
-    el("b", "", st.aiCalls
-      ? `AI used for ${aiFields} answer${aiFields === 1 ? "" : "s"} · ${st.aiCalls} call${st.aiCalls === 1 ? "" : "s"} · ${fmt(st.inTokens)} tokens in / ${fmt(st.outTokens)} out`
-      : "No AI used — every answer came from your CV, facts and record."),
-  );
-  for (const c of st.calls || []) {
-    aiBox.append(el("div", "call", `${c.ai} · ${c.model} · ${c.purpose} · ${fmt(c.inTokens)} → ${fmt(c.outTokens)} tokens · ${(c.ms / 1000).toFixed(1)} s`));
-  }
-  $("report").append(aiBox);
-
-  if (report.learnError) {
-    $("report").append(el("div", "learned bad", `Could not save your own answers: ${report.learnError}`));
-  }
+// What was saved from your own answers, or why it could not be.
+function renderLearned(report) {
+  if (report.learnError) $("report").append(el("div", "learned bad", `Could not save your own answers: ${report.learnError}`));
   const learned = (report.learned || []).filter((x) => x && typeof x === "object");
-  if (learned.length) {
-    const box = el("div", "learned");
-    box.append(el("b", "", `Saved to your record (${learned.length}) — next time these fill themselves:`));
-    for (const x of learned) box.append(el("div", "call", `${x.question} → ${[].concat(x.answer).join(", ")}`));
-    const link = el("a", "", "Open the record in JobPilot");
-    link.href = "#";
-    link.addEventListener("click", async (e) => {
-      e.preventDefault();
-      const { port } = await chrome.storage.local.get({ port: 3000 });
-      chrome.tabs.create({ url: `http://127.0.0.1:${port}/settings?tab=answers` });
-    });
-    box.append(link);
-    $("report").append(box);
-  }
+  if (learned.length) $("report").append(learnedBox(learned));
+}
 
+function renderGroups(groups) {
   for (const g of GROUPS) {
-    const rows = results.filter((r) => groupOf(r) === g.key);
+    const rows = groups.get(g.key) || [];
     if (!rows.length) continue;
     $("report").append(el("h2", "", `${g.title} (${rows.length})`));
     const ul = el("ul");
-    for (const r of rows) {
-      const li = el("li", r.status === "filled" ? "filled" : g.key === "required" ? "" : "skipped");
-      if (g.tag) li.append(el("span", "tag " + g.key, g.tag));
-      li.append(el("span", "q", r.label || "(unlabelled field)"));
-      const note =
-        r.status === "check" ? "pick it from the list"
-        : r.status === "blank" && !r.required ? "optional"
-        : r.status === "blank" ? "no answer found"
-        : r.status === "skipped" ? (r.rule === "marketing-optin" ? "marketing opt-in" : "optional")
-        : r.value;
-      if (note) li.append(el("span", "a", note));
-      ul.append(li);
-    }
+    for (const r of rows) ul.append(resultRow(r, g));
     $("report").append(ul);
   }
 }
@@ -241,7 +312,7 @@ $("learn").addEventListener("click", async () => {
     .executeScript({ target: { tabId: tab.id, allFrames: true }, func: () => (window.__jobpilot ? window.__jobpilot.flush() : 0) })
     .catch(() => []);
   const n = runs.reduce((t, r) => t + (r.result || 0), 0);
-  status(n ? `Saving ${n} answer${n === 1 ? "" : "s"} you gave…` : "Nothing new to save. Fill or change a field on the page first.");
+  status(n ? `Saving ${plural(n, "answer")} you gave…` : "Nothing new to save. Fill or change a field on the page first.");
 });
 
 (async () => {
@@ -266,7 +337,7 @@ async function setMode(mode) {
   await chrome.storage.local.set({ suggest: mode === "everywhere" });
   if (mode === "page") {
     // Company career sites don't run JobPilot by themselves; start it on this page.
-    await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ["filler.js"] }).catch(() => {});
+    await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: FILLER_FILES }).catch(() => {});
   }
   await inPage((on) => window.__jobpilot && window.__jobpilot.setPage && window.__jobpilot.setPage(on), [mode === "page"]);
   showMode(mode);
@@ -276,6 +347,14 @@ $("modeOff").addEventListener("click", () => setMode("off"));
 $("modePage").addEventListener("click", () => setMode("page"));
 $("modeAll").addEventListener("click", () => setMode("everywhere"));
 
+function watchingText(mode, seen) {
+  if (mode === "off") return "Suggestions are off. Fill this page still works.";
+  if (!seen.length) return "JobPilot can't reach this page. Reload it, then choose “This page” again.";
+  const fields = seen.reduce((n, x) => n + x.fields, 0);
+  const where = seen.some((x) => x.inWindow) ? " in the application window" : "";
+  return `Suggestions on ${mode === "page" ? "for this page" : "everywhere"} · ${plural(fields, "form field")} seen${where}.`;
+}
+
 // What is switched on for this page, and whether JobPilot can see the form.
 async function showWatching() {
   if (!tab) return;
@@ -284,47 +363,39 @@ async function showWatching() {
   const { suggest } = await chrome.storage.local.get({ suggest: false });
   const mode = suggest ? "everywhere" : seen.some((x) => x.mode === "page") ? "page" : "off";
   showMode(mode);
-  const fields = seen.reduce((n, x) => n + x.fields, 0);
-  const where = seen.some((x) => x.inWindow) ? " in the application window" : "";
-  $("watching").textContent =
-    mode === "off"
-      ? "Suggestions are off. Fill this page still works."
-      : !seen.length
-        ? "JobPilot can't reach this page. Reload it, then choose “This page” again."
-        : `Suggestions on ${mode === "page" ? "for this page" : "everywhere"} · ${fields} form field${fields === 1 ? "" : "s"} seen${where}.`;
+  $("watching").textContent = watchingText(mode, seen);
+}
+
+// Runs in the page: the form's markup, without anything typed into it.
+function formLayoutInTab() {
+  const roots = [];
+  const collect = (node) => {
+    for (const el of node.querySelectorAll("*")) {
+      if (!el.shadowRoot) continue;
+      roots.push(el.shadowRoot);
+      collect(el.shadowRoot);
+    }
+  };
+  collect(document);
+  const dialogs = [...document.querySelectorAll('[role="dialog"], dialog[open], [aria-modal="true"]')].filter((d) => d.querySelector("input, select, textarea"));
+  const root = dialogs[dialogs.length - 1] || document.querySelector("main") || document.body;
+  // getHTML keeps open shadow roots in place (LinkedIn's Easy Apply lives in one).
+  let html = root.getHTML ? root.getHTML({ serializableShadowRoots: true, shadowRoots: roots }) : root.innerHTML;
+  if (!root.getHTML) html += roots.map((r) => r.innerHTML).join("\n");
+  return html
+    .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, "")
+    .replace(/<svg\b[\s\S]*?<\/svg>/gi, "<svg/>")
+    .replace(/<input\b[^>]*type="hidden"[^>]*>/gi, "")
+    .replace(/(<input\b[^>]*?)\svalue="[^"]*"/gi, "$1")
+    .replace(/(<textarea\b[^>]*>)[\s\S]*?(<\/textarea>)/gi, "$1$2");
 }
 
 // A copy of the form's markup without anything typed into it, saved on this computer.
 $("layout").addEventListener("click", async () => {
   try {
-    const [res] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () => {
-        const roots = [];
-        const collect = (node) => {
-          for (const el of node.querySelectorAll("*")) {
-            if (!el.shadowRoot) continue;
-            roots.push(el.shadowRoot);
-            collect(el.shadowRoot);
-          }
-        };
-        collect(document);
-        const dialogs = [...document.querySelectorAll('[role="dialog"], dialog[open], [aria-modal="true"]')].filter((d) => d.querySelector("input, select, textarea"));
-        const root = dialogs[dialogs.length - 1] || document.querySelector("main") || document.body;
-        // getHTML keeps open shadow roots in place (LinkedIn's Easy Apply lives in one).
-        let html = root.getHTML ? root.getHTML({ serializableShadowRoots: true, shadowRoots: roots }) : root.innerHTML;
-        if (!root.getHTML) html += roots.map((r) => r.innerHTML).join("\n");
-        return html
-          .replace(/<script\b[\s\S]*?<\/script>/gi, "")
-          .replace(/<style\b[\s\S]*?<\/style>/gi, "")
-          .replace(/<svg\b[\s\S]*?<\/svg>/gi, "<svg/>")
-          .replace(/<input\b[^>]*type="hidden"[^>]*>/gi, "")
-          .replace(/(<input\b[^>]*?)\svalue="[^"]*"/gi, "$1")
-          .replace(/(<textarea\b[^>]*>)[\s\S]*?(<\/textarea>)/gi, "$1$2");
-      },
-    });
-    const { port } = await chrome.storage.local.get({ port: 3000 });
-    const r = await fetch(`http://127.0.0.1:${port}/api/apply/debug`, {
+    const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: formLayoutInTab });
+    const r = await fetch(`http://127.0.0.1:${await getPort()}/api/apply/debug`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url: tab.url, html: res.result }),
