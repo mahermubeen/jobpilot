@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Rejects AI attribution in commit messages: "Co-Authored-By:" lines naming an
+# AI tool and "Generated with <AI tool>" footers. The human who commits is the
+# author. Enabled with: git config core.hooksPath .githooks
+set -uo pipefail
+msg_file="${1:?usage: commit-msg <message-file>}"
+
+# Drop comment lines, and everything below the scissors line `git commit -v` adds.
+body=$(awk '/^# -+ >8 -+$/ { exit } !/^#/ { print }' "$msg_file")
+
+ai='(claude|anthropic|openai|chatgpt|copilot|cursor|gemini|codex)'
+if grep -qiE "^[[:space:]]*co-authored-by:.*${ai}" <<<"$body" ||
+   grep -qiE "generated (with|by) \[?${ai}" <<<"$body"; then
+  echo "commit-msg: remove the AI co-author or 'Generated with' line; commits carry no AI attribution (see AGENTS.md)." >&2
+  exit 1
+fi
+exit 0
