@@ -82,28 +82,23 @@ export async function runActor<T>(
   return typed;
 }
 
+type AccountUsage = { usedUsd: number; limitUsd: number; plan: string };
+type UsageLimits = { limits?: { maxMonthlyUsageUsd?: number }; current?: { monthlyUsageUsd?: number } };
+
+function toUsage(limits: UsageLimits | undefined, user: { plan?: { id?: string } } | undefined): AccountUsage {
+  return {
+    usedUsd: Number(limits?.current?.monthlyUsageUsd ?? 0),
+    limitUsd: Number(limits?.limits?.maxMonthlyUsageUsd ?? 0),
+    plan: String(user?.plan?.id ?? "unknown"),
+  };
+}
+
 /** Real usage numbers from the Apify account, when the token can read them. */
-export async function accountUsage(): Promise<{
-  usedUsd: number;
-  limitUsd: number;
-  plan: string;
-} | null> {
+export async function accountUsage(): Promise<AccountUsage | null> {
   try {
     const apify = await client();
-    const [limits, user] = await Promise.all([
-      apify.user().limits(),
-      apify.user().get(),
-    ]);
-    const l = limits as unknown as {
-      limits?: { maxMonthlyUsageUsd?: number };
-      current?: { monthlyUsageUsd?: number };
-    };
-    const u = user as unknown as { plan?: { id?: string } };
-    return {
-      usedUsd: Number(l?.current?.monthlyUsageUsd ?? 0),
-      limitUsd: Number(l?.limits?.maxMonthlyUsageUsd ?? 0),
-      plan: String(u?.plan?.id ?? "unknown"),
-    };
+    const [limits, user] = await Promise.all([apify.user().limits(), apify.user().get()]);
+    return toUsage(limits as unknown as UsageLimits, user as unknown as { plan?: { id?: string } });
   } catch {
     return null;
   }

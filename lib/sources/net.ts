@@ -83,6 +83,8 @@ export async function pool<T, R>(items: T[], limit: number, fn: (item: T, i: num
   const worker = async () => {
     while (next < items.length) {
       const i = next++;
+      // Each worker runs its items one after another; `limit` workers run in parallel.
+      // eslint-disable-next-line no-await-in-loop -- this is the concurrency pool itself
       out[i] = await fn(items[i], i);
     }
   };
@@ -92,15 +94,22 @@ export async function pool<T, R>(items: T[], limit: number, fn: (item: T, i: num
 
 export const str = (v: unknown) => (typeof v === "string" ? v.trim() : typeof v === "number" ? String(v) : "");
 
+const PAY_UNITS = ["hour", "day", "week", "month"] as const;
+
+/** The pay period named in `period`, defaulting to "year". */
+const payUnit = (period: unknown) => {
+  const per = String(period ?? "").toLowerCase();
+  return PAY_UNITS.find((u) => per.includes(u)) ?? "year";
+};
+
+const payAmount = (lo: number, hi: number) => (lo && hi && lo !== hi ? `${lo} - ${hi}` : String(hi || lo));
+
 /** "USD 90000 - 120000 per year" from numbers, or "" when no amount is given. */
 export function payText(min: unknown, max: unknown, currency: unknown, period: unknown): string {
   const lo = Number(min) || 0;
   const hi = Number(max) || 0;
   if (!lo && !hi) return "";
-  const per = String(period ?? "").toLowerCase();
-  const unit = /hour/.test(per) ? "hour" : /day/.test(per) ? "day" : /week/.test(per) ? "week" : /month/.test(per) ? "month" : "year";
-  const amount = lo && hi && lo !== hi ? `${lo} - ${hi}` : String(hi || lo);
-  return `${str(currency) || "USD"} ${amount} per ${unit}`;
+  return `${str(currency) || "USD"} ${payAmount(lo, hi)} per ${payUnit(period)}`;
 }
 
 export const saysRemote = (text: string) => /\b(remote|anywhere|worldwide|work from home|wfh)\b/i.test(text);

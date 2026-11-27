@@ -54,6 +54,8 @@ export async function hasApollo(): Promise<boolean> {
   return !!(await getSecrets()).apolloKey;
 }
 
+const text = (v: unknown) => (v == null ? "" : String(v));
+
 export async function apolloCompany(domain: string): Promise<ApolloCompany | null> {
   const data = await call<{ organization?: Record<string, unknown> }>(
     `/organizations/enrich?domain=${encodeURIComponent(domain)}`,
@@ -61,15 +63,40 @@ export async function apolloCompany(domain: string): Promise<ApolloCompany | nul
   );
   const o = data.organization;
   if (!o) return null;
-  const s = (v: unknown) => (v == null ? "" : String(v));
   return {
-    size: s(o.estimated_num_employees),
-    industry: s(o.industry),
-    about: s(o.short_description),
-    address: s(o.raw_address),
-    phone: s(o.phone),
-    linkedin: s(o.linkedin_url),
+    size: text(o.estimated_num_employees),
+    industry: text(o.industry),
+    about: text(o.short_description),
+    address: text(o.raw_address),
+    phone: text(o.phone),
+    linkedin: text(o.linkedin_url),
   };
+}
+
+const isHiddenEmail = (email: string) => /not_unlocked|domain\.com$/.test(email);
+
+function toPerson(m: Record<string, unknown>): ApolloPerson {
+  const email = text(m.email);
+  return {
+    name: text(m.name) || [text(m.first_name), text(m.last_name)].filter(Boolean).join(" "),
+    title: text(m.title),
+    email: isHiddenEmail(email) ? "" : email,
+    phone: text((m.organization as Record<string, unknown> | undefined)?.phone),
+    linkedin: text(m.linkedin_url),
+  };
+}
+
+/** Reveals one person (one Apollo credit). A failed reveal returns null so the rest of the lookup goes on. */
+async function revealPerson(id: string | number): Promise<ApolloPerson | null> {
+  try {
+    const match = await call<{ person?: Record<string, unknown> }>("/people/match", {
+      method: "POST",
+      body: JSON.stringify({ id, reveal_personal_emails: false }),
+    });
+    return toPerson(match.person ?? {});
+  } catch {
+    return null;
+  }
 }
 
 export async function apolloPeople(domain: string, maxReveals = 2): Promise<ApolloPerson[]> {
@@ -84,29 +111,13 @@ export async function apolloPeople(domain: string, maxReveals = 2): Promise<Apol
       }),
     },
   );
-  const people: ApolloPerson[] = [];
-  for (const p of (search.people ?? []).slice(0, maxReveals)) {
-    if (!p.id) continue;
-    try {
-      const match = await call<{ person?: Record<string, unknown> }>("/people/match", {
-        method: "POST",
-        body: JSON.stringify({ id: p.id, reveal_personal_emails: false }),
-      });
-      const m = match.person ?? {};
-      const s = (v: unknown) => (v == null ? "" : String(v));
-      const email = s(m.email);
-      people.push({
-        name: s(m.name) || [s(m.first_name), s(m.last_name)].filter(Boolean).join(" "),
-        title: s(m.title),
-        email: /not_unlocked|domain\.com$/.test(email) ? "" : email,
-        phone: s((m.organization as Record<string, unknown> | undefined)?.phone),
-        linkedin: s(m.linkedin_url),
-      });
-    } catch {
-      // A failed reveal should not stop the rest of the company's lookup.
-    }
-  }
-  return people.filter((p) => p.name);
+  const ids = (search.people ?? [])
+    .slice(0, maxReveals)
+    .map((p) => p.id)
+    .filter((id): id is string | number => (typeof id === "string" || typeof id === "number") && !!id);
+  // At most `maxReveals` (2 by default) calls, so running them together is safe.
+  const people = await Promise.all(ids.map(revealPerson));
+  return people.filter((p): p is ApolloPerson => !!p?.name);
 }
 
 export async function testApollo(): Promise<string> {

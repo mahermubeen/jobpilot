@@ -60,30 +60,31 @@ export type RankedEmail = {
   kind: "hiring" | "person" | "generic";
 };
 
+const EMAIL_SHAPE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
+const KIND_ORDER: Record<RankedEmail["kind"], number> = { hiring: 0, person: 1, generic: 2 };
+
+const onCompanyDomain = (email: string, companyDomain: string | null) => {
+  if (!companyDomain) return true;
+  const domain = email.split("@")[1];
+  return domain === companyDomain || domain.endsWith(`.${companyDomain}`);
+};
+
+const isUsableEmail = (email: string, companyDomain: string | null) =>
+  EMAIL_SHAPE.test(email) && !JUNK.test(email) && !FILE.test(email) && onCompanyDomain(email, companyDomain);
+
+const emailKind = (email: string): RankedEmail["kind"] => (HIRING.test(email) ? "hiring" : GENERIC.test(email) ? "generic" : "person");
+
 /**
  * Orders scraped emails by how useful they are for a job application:
  * hiring inboxes first, then named people, then generic inboxes. Addresses on
  * other domains, no-reply inboxes and image filenames are dropped.
  */
 export function rankEmails(emails: string[], companyDomain: string | null): RankedEmail[] {
-  const seen = new Set<string>();
-  const ranked: RankedEmail[] = [];
-  for (const raw of emails) {
-    const email = raw.trim().toLowerCase();
-    if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(email)) continue;
-    if (seen.has(email) || JUNK.test(email) || FILE.test(email)) continue;
-    const domain = email.split("@")[1];
-    if (companyDomain && !(domain === companyDomain || domain.endsWith(`.${companyDomain}`))) {
-      continue;
-    }
-    seen.add(email);
-    ranked.push({
-      email,
-      kind: HIRING.test(email) ? "hiring" : GENERIC.test(email) ? "generic" : "person",
-    });
-  }
-  const order = { hiring: 0, person: 1, generic: 2 };
-  return ranked.sort((a, b) => order[a.kind] - order[b.kind]);
+  const unique = new Set(emails.map((raw) => raw.trim().toLowerCase()));
+  return [...unique]
+    .filter((email) => isUsableEmail(email, companyDomain))
+    .map((email) => ({ email, kind: emailKind(email) }))
+    .sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind]);
 }
 
 const NOT_A_COMPANY_SITE =

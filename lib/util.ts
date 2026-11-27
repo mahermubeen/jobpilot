@@ -59,3 +59,19 @@ export function dialable(phone: string | null | undefined): string {
   if (!digits) return "";
   return (t.startsWith("+") ? "+" : "") + digits;
 }
+
+/**
+ * A queue that runs async steps one at a time, in the order they were asked for.
+ * A failed step does not stop the ones after it.
+ */
+export function oneAtATime() {
+  let queue: Promise<unknown> = Promise.resolve();
+  return <T>(fn: () => Promise<T>): Promise<T> => {
+    const next = queue.then(fn, fn);
+    queue = next.catch(() => {});
+    return next;
+  };
+}
+
+/** Text as a regular expression that matches it literally (dots, brackets and plus signs included). */
+export const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

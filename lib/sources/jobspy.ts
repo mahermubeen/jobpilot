@@ -68,36 +68,44 @@ type Query = {
   google_search_term?: string;
 };
 
-export function buildQueries(ctx: Pick<SourceContext, "boardTitles" | "locations" | "postedWithinDays" | "limit">, sites: JobSpySite[]) {
-  const queries: (Query & { tier: string })[] = [];
-  for (const loc of ctx.locations) {
-    for (const title of ctx.boardTitles) {
-      for (const site of sites) {
-        if (!siteCovers(site, loc)) continue;
-        const country = jobSpyCountry(loc.indeedCountry);
-        const worldwide = /\b(worldwide|anywhere|global)\b/i.test(loc.linkedin);
-        // LinkedIn reads its own location names; the other boards want a place inside the country.
-        const location =
-          site === "linkedin" ? loc.linkedin : loc.indeedLocation || (worldwide ? "" : loc.linkedin || country);
-        const place = loc.remote ? "remote" : location ? `in ${location}` : "";
-        queries.push({
-          id: String(queries.length),
-          site,
-          search_term: title,
-          location,
-          is_remote: loc.remote,
-          results_wanted: ctx.limit,
-          hours_old: ctx.postedWithinDays * 24,
-          country,
-          google_search_term: site === "google"
-            ? `${title} jobs ${place} ${ctx.postedWithinDays === 1 ? "since yesterday" : "in the last week"}`.replace(/\s+/g, " ").trim()
-            : undefined,
-          tier: loc.label,
-        });
-      }
-    }
-  }
-  return queries;
+type QueryContext = Pick<SourceContext, "boardTitles" | "locations" | "postedWithinDays" | "limit">;
+type TieredQuery = Query & { tier: string };
+
+const WORLDWIDE = /\b(worldwide|anywhere|global)\b/i;
+
+/** LinkedIn reads its own location names; the other boards want a place inside the country. */
+function queryLocation(site: JobSpySite, loc: SearchLocation, country: string): string {
+  if (site === "linkedin") return loc.linkedin;
+  return loc.indeedLocation || (WORLDWIDE.test(loc.linkedin) ? "" : loc.linkedin || country);
+}
+
+function googleSearchTerm(title: string, loc: SearchLocation, location: string, days: QueryContext["postedWithinDays"]): string {
+  const place = loc.remote ? "remote" : location ? `in ${location}` : "";
+  const since = days === 1 ? "since yesterday" : "in the last week";
+  return `${title} jobs ${place} ${since}`.replace(/\s+/g, " ").trim();
+}
+
+function buildQuery(ctx: QueryContext, loc: SearchLocation, title: string, site: JobSpySite): Omit<TieredQuery, "id"> {
+  const country = jobSpyCountry(loc.indeedCountry);
+  const location = queryLocation(site, loc, country);
+  return {
+    site,
+    search_term: title,
+    location,
+    is_remote: loc.remote,
+    results_wanted: ctx.limit,
+    hours_old: ctx.postedWithinDays * 24,
+    country,
+    google_search_term: site === "google" ? googleSearchTerm(title, loc, location, ctx.postedWithinDays) : undefined,
+    tier: loc.label,
+  };
+}
+
+/** One query per location × title × site that covers the location. O(locations · titles · sites). */
+export function buildQueries(ctx: QueryContext, sites: JobSpySite[]): TieredQuery[] {
+  return ctx.locations
+    .flatMap((loc) => ctx.boardTitles.flatMap((title) => sites.filter((site) => siteCovers(site, loc)).map((site) => buildQuery(ctx, loc, title, site))))
+    .map((q, i) => ({ id: String(i), ...q }));
 }
 
 export type JobSpyRow = {
@@ -124,13 +132,36 @@ export type JobSpyRow = {
   _query?: string;
 };
 
+const BOARD_DOMAIN = /linkedin\.com|indeed\.com|glassdoor\./;
+
+/** The company's own site: the direct URL, or the board's company URL when it is not the board itself. */
+function companyWebsite(r: JobSpyRow, companyUrl: string): string | undefined {
+  const direct = str(r.company_url_direct);
+  if (direct) return direct;
+  return companyUrl && !BOARD_DOMAIN.test(companyUrl) ? companyUrl : undefined;
+}
+
+const orUndefined = (v: unknown) => str(v) || undefined;
+
+function jobSpyCompany(r: JobSpyRow): RawJob["company_"] {
+  const companyUrl = str(r.company_url);
+  const about = str(r.company_description);
+  return {
+    website: companyWebsite(r, companyUrl),
+    linkedin: /linkedin\.com/.test(companyUrl) ? companyUrl.split("?")[0] : undefined,
+    industry: orUndefined(r.company_industry),
+    size: orUndefined(r.company_num_employees),
+    about: about ? truncate(about, 600) : undefined,
+    address: orUndefined(r.company_addresses),
+  };
+}
+
 export function mapJobSpyRow(r: JobSpyRow, tier: string): RawJob | null {
   const site = (r.site ?? "") as JobSpySite;
   const role = str(r.title);
   const company = str(r.company);
   const link = str(r.job_url);
   if (!role || !company || !link || !SITE_LABEL[site]) return null;
-  const companyUrl = str(r.company_url);
   return {
     source: SITE_LABEL[site],
     kind: "listing",
@@ -138,21 +169,14 @@ export function mapJobSpyRow(r: JobSpyRow, tier: string): RawJob | null {
     company,
     role,
     link,
-    applyUrl: str(r.job_url_direct) || undefined,
+    applyUrl: orUndefined(r.job_url_direct),
     location: str(r.location),
     description: truncate(str(r.description), 6000),
     pay: payText(r.min_amount, r.max_amount, r.currency, r.interval),
     mode: r.is_remote ? "Remote" : "",
     tier,
     posted: isoDate(r.date_posted),
-    company_: {
-      website: str(r.company_url_direct) || (companyUrl && !/linkedin\.com|indeed\.com|glassdoor\./.test(companyUrl) ? companyUrl : undefined),
-      linkedin: /linkedin\.com/.test(companyUrl) ? companyUrl.split("?")[0] : undefined,
-      industry: str(r.company_industry) || undefined,
-      size: str(r.company_num_employees) || undefined,
-      about: str(r.company_description) ? truncate(str(r.company_description), 600) : undefined,
-      address: str(r.company_addresses) || undefined,
-    },
+    company_: jobSpyCompany(r),
   };
 }
 
@@ -201,42 +225,47 @@ function runJobSpy(input: string, hardStopMs: number): Promise<{ lines: Line[]; 
   });
 }
 
-/**
- * Scrapes the given sites for every board title and location within
- * `budgetMs`. Results and errors come back per site.
- */
-export async function searchJobSpy(
-  ctx: SourceContext,
-  sites: JobSpySite[],
-  budgetMs = 15 * 60_000,
-): Promise<{ jobs: Partial<Record<JobSpySite, RawJob[]>>; errors: Partial<Record<JobSpySite, string[]>> }> {
-  const queries = buildQueries(ctx, sites);
-  if (!queries.length) return { jobs: {}, errors: {} };
-  // `tier` is ours, not JobSpy's; undefined keys drop out of the JSON.
-  const input = JSON.stringify({ queries: queries.map((q) => ({ ...q, tier: undefined })), budget_s: Math.round(budgetMs / 1000) });
-  // The script stops starting searches at the budget; this is the backstop for one that hangs.
-  const { lines, code, err, stopped } = await runJobSpy(input, budgetMs + 3 * 60_000);
-  if (!lines.length) {
-    const why = stopped ? "took too long and was stopped" : `stopped (exit ${code})`;
-    throw new Error(`JobSpy ${why}: ${truncate(err.trim().split("\n").slice(-3).join(" "), 300) || "no output"}`);
-  }
+type SiteResults = { jobs: Partial<Record<JobSpySite, RawJob[]>>; errors: Partial<Record<JobSpySite, string[]>> };
 
+const queryLabel = (q: TieredQuery) => `"${q.search_term}" in ${q.tier}`;
+
+function addTo<T>(bySite: Partial<Record<JobSpySite, T[]>>, site: JobSpySite, items: T[]) {
+  if (items.length) (bySite[site] ??= []).push(...items);
+}
+
+/** Sorts each result line into jobs and errors per site; queries with no line count as cut off. */
+function collectResults(lines: Line[], queries: TieredQuery[], excludeTitleWords: string[]): SiteResults {
   const byId = new Map(queries.map((q) => [q.id, q]));
-  const jobs: Partial<Record<JobSpySite, RawJob[]>> = {};
-  const errors: Partial<Record<JobSpySite, string[]>> = {};
+  const out: SiteResults = { jobs: {}, errors: {} };
   const done = new Set<string>();
   for (const line of lines) {
     const q = byId.get(String(line.query));
     if (!q) continue;
     done.add(q.id);
-    if (line.error) (errors[q.site] ??= []).push(`"${q.search_term}" in ${q.tier}: ${line.error}`);
-    for (const row of line.jobs ?? []) {
-      const job = mapJobSpyRow(row, q.tier);
-      if (job && !excludedTitle(job.role, ctx.excludeTitleWords)) (jobs[q.site] ??= []).push(job);
-    }
+    addTo(out.errors, q.site, line.error ? [`${queryLabel(q)}: ${line.error}`] : []);
+    const rows = line.jobs ?? [];
+    addTo(out.jobs, q.site, rows.map((row) => mapJobSpyRow(row, q.tier)).filter((j): j is RawJob => !!j && !excludedTitle(j.role, excludeTitleWords)));
   }
-  for (const q of queries) {
-    if (!done.has(q.id)) (errors[q.site] ??= []).push(`"${q.search_term}" in ${q.tier}: stopped before it finished`);
-  }
-  return { jobs, errors };
+  for (const q of queries.filter((q) => !done.has(q.id))) addTo(out.errors, q.site, [`${queryLabel(q)}: stopped before it finished`]);
+  return out;
+}
+
+function runFailure(run: { code: number | null; err: string; stopped: boolean }): Error {
+  const why = run.stopped ? "took too long and was stopped" : `stopped (exit ${run.code})`;
+  return new Error(`JobSpy ${why}: ${truncate(run.err.trim().split("\n").slice(-3).join(" "), 300) || "no output"}`);
+}
+
+/**
+ * Scrapes the given sites for every board title and location within
+ * `budgetMs`. Results and errors come back per site.
+ */
+export async function searchJobSpy(ctx: SourceContext, sites: JobSpySite[], budgetMs = 15 * 60_000): Promise<SiteResults> {
+  const queries = buildQueries(ctx, sites);
+  if (!queries.length) return { jobs: {}, errors: {} };
+  // `tier` is ours, not JobSpy's; undefined keys drop out of the JSON.
+  const input = JSON.stringify({ queries: queries.map((q) => ({ ...q, tier: undefined })), budget_s: Math.round(budgetMs / 1000) });
+  // The script stops starting searches at the budget; this is the backstop for one that hangs.
+  const run = await runJobSpy(input, budgetMs + 3 * 60_000);
+  if (!run.lines.length) throw runFailure(run);
+  return collectResults(run.lines, queries, ctx.excludeTitleWords);
 }

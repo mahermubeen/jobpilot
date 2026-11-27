@@ -21,6 +21,32 @@ const UNIT_MS: Record<string, number> = {
   year: 31536e6,
 };
 
+/** Epoch seconds or milliseconds; null unless a positive finite number. */
+const epochDate = (n: number) => (Number.isFinite(n) && n > 0 ? new Date(n < 1e12 ? n * 1000 : n) : null);
+
+const validDate = (d: Date) => (Number.isNaN(d.getTime()) ? null : d);
+
+/** ISO dates and epoch strings; undefined when the text is not one of those. */
+function parseAbsolute(t: string, raw: string): Date | null | undefined {
+  if (/^\d{10,13}$/.test(t)) return epochDate(Number(t));
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return validDate(new Date(`${t}T23:59:59Z`));
+  if (/^\d{4}-\d{2}-\d{2}t/.test(t)) return validDate(new Date(raw.trim()));
+  return undefined;
+}
+
+const UNIT_ALIASES: Record<string, string> = { min: "minute", hr: "hour" };
+
+/** "3 days ago", "an hour ago", "Just posted", "yesterday". */
+function parseRelative(t: string, now: Date): Date | null {
+  if (/\b(just|today|now|few seconds|moments?)\b/.test(t)) return now;
+  if (/\byesterday\b/.test(t)) return new Date(now.getTime() - UNIT_MS.day);
+  const m = t.match(/(\d+|an?|one)\+?\s*(minute|min|hour|hr|day|week|month|year)s?\b/);
+  if (!m) return null;
+  const n = /^\d+$/.test(m[1]) ? Number(m[1]) : 1;
+  const unit = UNIT_ALIASES[m[2]] ?? m[2];
+  return new Date(now.getTime() - n * UNIT_MS[unit]);
+}
+
 /**
  * Reads a posting date as the job boards give it: ISO dates, epoch numbers or
  * text like "3 days ago", "30+ days ago" and "Just posted". A date without a
@@ -28,32 +54,12 @@ const UNIT_MS: Record<string, number> = {
  * dropped from a 24-hour search. Returns null when it can't tell.
  */
 export function parsePosted(value: unknown, now = new Date()): Date | null {
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-    return new Date(value < 1e12 ? value * 1000 : value);
-  }
+  if (typeof value === "number") return epochDate(value);
   if (typeof value !== "string") return null;
   const t = value.trim().toLowerCase();
   if (!t) return null;
-
-  if (/^\d{10,13}$/.test(t)) return parsePosted(Number(t), now);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) {
-    const d = new Date(`${t}T23:59:59Z`);
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-  if (/^\d{4}-\d{2}-\d{2}t/.test(t)) {
-    const d = new Date(value.trim());
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-
-  if (/\b(just|today|now|few seconds|moments?)\b/.test(t)) return now;
-  if (/\byesterday\b/.test(t)) return new Date(now.getTime() - UNIT_MS.day);
-  const m = t.match(/(\d+|an?|one)\+?\s*(minute|min|hour|hr|day|week|month|year)s?\b/);
-  if (m) {
-    const n = /^\d+$/.test(m[1]) ? Number(m[1]) : 1;
-    const unit = { min: "minute", hr: "hour" }[m[2]] ?? m[2];
-    return new Date(now.getTime() - n * UNIT_MS[unit]);
-  }
-  return null;
+  const absolute = parseAbsolute(t, value);
+  return absolute === undefined ? parseRelative(t, now) : absolute;
 }
 
 // Allows for clock and timezone drift between the board and this machine.

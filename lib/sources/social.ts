@@ -35,12 +35,33 @@ export function companyFromText(text: string): string {
   return m?.[1]?.replace(/[.,!:]+$/, "") ?? "";
 }
 
-/** A post becomes a job when it is hiring (not someone looking for work) and mentions a search title. */
-export function postToJob(p: Post, ctx: Pick<SourceContext, "titles" | "excludeTitleWords" | "locations">): RawJob | null {
+type MatchContext = Pick<SourceContext, "titles" | "excludeTitleWords" | "locations">;
+
+/** The search location a job counts under: the remote one for remote jobs, else the first. */
+const tierFor = (remote: boolean, locations: SourceContext["locations"]) =>
+  (remote ? locations.find((l) => l.remote)?.label : locations[0]?.label) ?? "";
+
+/** The post's text when it is someone hiring, not someone looking for work. */
+function hiringText(p: Post): string | null {
   const text = `${p.title ?? ""}\n${p.text}`.trim();
-  if (!text || NOT_HIRING.test(text) || !HIRING.test(text)) return null;
+  return text && !NOT_HIRING.test(text) && HIRING.test(text) ? text : null;
+}
+
+/** The search title a post is about, unless its headline names an excluded word. */
+function postTitle(p: Post, text: string, ctx: MatchContext): string | null {
   const title = matchingTitle(p.title || text, ctx.titles) ?? matchingTitle(text, ctx.titles);
   if (!title || excludedTitle(p.title || text.split("\n")[0], ctx.excludeTitleWords)) return null;
+  return title;
+}
+
+const postRecruiter = (p: Post): RawJob["recruiter"] =>
+  p.author ? { name: p.author, linkedin: p.authorUrl?.includes("linkedin.com") ? p.authorUrl : undefined } : undefined;
+
+/** A post becomes a job when it is hiring (not someone looking for work) and mentions a search title. */
+export function postToJob(p: Post, ctx: MatchContext): RawJob | null {
+  const text = hiringText(p);
+  const title = text && postTitle(p, text, ctx);
+  if (!text || !title) return null;
   const remote = saysRemote(text);
   return {
     source: p.source,
@@ -53,10 +74,10 @@ export function postToJob(p: Post, ctx: Pick<SourceContext, "titles" | "excludeT
     description: truncate(text, 4000),
     pay: "",
     mode: remote ? "Remote" : "",
-    tier: (remote ? ctx.locations.find((l) => l.remote)?.label : ctx.locations[0]?.label) ?? "",
+    tier: tierFor(remote, ctx.locations),
     posted: p.posted,
     company_: {},
-    recruiter: p.author ? { name: p.author, linkedin: p.authorUrl?.includes("linkedin.com") ? p.authorUrl : undefined } : undefined,
+    recruiter: postRecruiter(p),
   };
 }
 
@@ -64,23 +85,46 @@ export function postToJob(p: Post, ctx: Pick<SourceContext, "titles" | "excludeT
 
 type HnHit = { objectID: string; title?: string; created_at?: string; comment_text?: string; parent_id?: number; story_id?: number; author?: string };
 
-/**
- * One top-level comment per company, by convention starting with a line like
- * "Acme | Senior Engineer | Remote (EU) | $150k".
- */
-export function parseHnComment(hit: HnHit, ctx: Pick<SourceContext, "titles" | "excludeTitleWords" | "locations">): RawJob | null {
-  const text = stripHtml(hit.comment_text);
-  if (!text) return null;
+const HN_PLACE = /\b(remote|onsite|on-site|hybrid)\b/i;
+const HN_PAY = /[$€£]\s?\d|\d+\s?k\b/i;
+const HN_MAX_PAGES = 5;
+
+/** The work mode a "Remote (EU)" / "Hybrid" / "Onsite" field names, or "". */
+function workMode(place: string): string {
+  if (/\bremote\b/i.test(place)) return "Remote";
+  if (/hybrid/i.test(place)) return "Hybrid";
+  return /onsite|on-site/i.test(place) ? "Onsite" : "";
+}
+
+/** Place and pay from the short "|"-separated fields of an HN headline. */
+function hnFields(parts: string[]): { place: string; pay: string } {
+  const short = parts.filter((p) => p.length <= 60);
+  const place = short.find((p) => HN_PLACE.test(p)) ?? short.slice(1).find((p) => p.includes(",")) ?? "";
+  return { place, pay: short.find((p) => HN_PAY.test(p)) ?? "" };
+}
+
+/** The headline split on "|", and the search title it matches, or null when it is not a job for us. */
+function hnHeadline(text: string, ctx: MatchContext): { parts: string[]; title: string } | null {
   const head = text.split("\n")[0];
   const parts = head.split(/\s+\|\s+|\s*\|\s*/).map((s) => s.trim()).filter(Boolean);
   if (parts.length < 2) return null;
   const title = matchingTitle(head, ctx.titles) ?? matchingTitle(text, ctx.titles);
   if (!title || excludedTitle(head, ctx.excludeTitleWords)) return null;
+  return { parts, title };
+}
+
+/**
+ * One top-level comment per company, by convention starting with a line like
+ * "Acme | Senior Engineer | Remote (EU) | $150k".
+ */
+export function parseHnComment(hit: HnHit, ctx: MatchContext): RawJob | null {
+  const text = stripHtml(hit.comment_text);
+  const headline = text ? hnHeadline(text, ctx) : null;
+  if (!headline) return null;
+  const { parts, title } = headline;
   const role = parts.find((p) => matchingTitle(p, ctx.titles)) ?? title;
-  const short = parts.filter((p) => p.length <= 60);
-  const place = short.find((p) => /\b(remote|onsite|on-site|hybrid)\b/i.test(p)) ?? short.slice(1).find((p) => /,/.test(p)) ?? "";
-  const pay = short.find((p) => /[$€£]\s?\d|\d+\s?k\b/i.test(p)) ?? "";
-  const remote = /\bremote\b/i.test(place);
+  const { place, pay } = hnFields(parts);
+  const mode = workMode(place);
   return {
     source: "HN Who is hiring",
     kind: "post",
@@ -91,8 +135,8 @@ export function parseHnComment(hit: HnHit, ctx: Pick<SourceContext, "titles" | "
     location: place,
     description: truncate(text, 6000),
     pay,
-    mode: remote ? "Remote" : /hybrid/i.test(place) ? "Hybrid" : /onsite|on-site/i.test(place) ? "Onsite" : "",
-    tier: (remote ? ctx.locations.find((l) => l.remote)?.label : ctx.locations[0]?.label) ?? "",
+    mode,
+    tier: tierFor(mode === "Remote", ctx.locations),
     // The thread runs all month; every comment counts as current, and repeats are dropped when saving.
     company_: {},
     recruiter: hit.author ? { name: `${hit.author} (HN)` } : undefined,
@@ -101,22 +145,22 @@ export function parseHnComment(hit: HnHit, ctx: Pick<SourceContext, "titles" | "
 
 const HN = "https://hn.algolia.com/api/v1";
 
+type HnPage = { hits: HnHit[]; nbPages: number };
+
 export async function searchHackerNews(ctx: SourceContext): Promise<RawJob[]> {
   const stories = await fetchJson<{ hits: HnHit[] }>(`${HN}/search_by_date?tags=story,author_whoishiring&hitsPerPage=6`);
   const thread = stories.hits.find((h) => /who is hiring/i.test(h.title ?? ""));
   if (!thread) return [];
-  const jobs: RawJob[] = [];
-  for (let page = 0; page < 5; page++) {
-    const res = await fetchJson<{ hits: HnHit[]; nbPages: number }>(
-      `${HN}/search?tags=comment,story_${thread.objectID}&hitsPerPage=1000&page=${page}`,
-    );
-    for (const hit of res.hits) {
-      if (String(hit.parent_id) !== thread.objectID) continue;
-      const job = parseHnComment(hit, ctx);
-      if (job) jobs.push(job);
-    }
-    if (page + 1 >= res.nbPages) break;
-  }
+  const pageUrl = (page: number) => `${HN}/search?tags=comment,story_${thread.objectID}&hitsPerPage=1000&page=${page}`;
+  // The first page says how many there are; the rest are fetched two at a time.
+  const first = await fetchJson<HnPage>(pageUrl(0));
+  const rest = Array.from({ length: Math.min(first.nbPages, HN_MAX_PAGES) - 1 }, (_, i) => i + 1);
+  const pages = [first, ...(await pool(rest, 2, (page) => fetchJson<HnPage>(pageUrl(page))))];
+  const jobs = pages
+    .flatMap((p) => p.hits)
+    .filter((hit) => String(hit.parent_id) === thread.objectID)
+    .map((hit) => parseHnComment(hit, ctx))
+    .filter((j): j is RawJob => !!j);
   ctx.log(`HN: read “${thread.title}”`);
   return jobs;
 }
