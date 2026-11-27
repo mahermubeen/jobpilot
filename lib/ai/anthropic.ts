@@ -1,9 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { noteTokens } from "./meter";
 import type { AiProvider } from "./provider";
+import { SYSTEM_PROMPT as SYSTEM } from "./system";
 
-const SYSTEM =
-  "You are a writing and data-extraction engine inside a job application app. " +
-  "Follow the instructions in the user message exactly and return only what it asks for.";
 
 /** Models whose safety classifiers can decline a request and that accept the fallback beta. */
 const supportsFallbacks = (model: string) =>
@@ -49,6 +48,12 @@ export function anthropicProvider(
             : {}),
         });
         const message = await stream.finalMessage();
+        const u = message.usage;
+        noteTokens(
+          message.model || model,
+          (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0),
+          u.output_tokens,
+        );
 
         if (message.stop_reason === "refusal") {
           throw new Error("Claude declined this request. Edit the text and try again.");

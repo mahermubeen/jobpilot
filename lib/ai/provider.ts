@@ -1,6 +1,4 @@
-import { getSecrets, getSettings } from "@/lib/settings";
-import { anthropicProvider } from "./anthropic";
-import { claudeCliProvider } from "./claude-cli";
+import { chainProvider } from "./chain";
 import { extractJson } from "./json";
 
 /** "score" is high-volume classification; "write" is cover letters and CVs. */
@@ -8,35 +6,29 @@ export type AiTier = "score" | "write";
 
 export interface AiProvider {
   name: string;
-  complete(prompt: string, opts: { tier: AiTier }): Promise<string>;
+  /** `purpose` labels the call in usage reports ("short answers", "cover letter"). */
+  complete(prompt: string, opts: { tier: AiTier; purpose?: string }): Promise<string>;
 }
 
-/** Add another provider here (for example OpenAI) by implementing AiProvider. */
+/** The AI chain from Settings: every task goes to the first AI that is set up and has credit. */
 export async function getProvider(): Promise<AiProvider> {
-  const [settings, secrets] = await Promise.all([getSettings(), getSecrets()]);
-  if (settings.ai.mode === "anthropic") {
-    if (!secrets.anthropicKey) {
-      throw new Error("No Anthropic API key saved. Add one in Settings.");
-    }
-    return anthropicProvider(secrets.anthropicKey, settings.ai.apiModels);
-  }
-  return claudeCliProvider(settings.ai.cliModels);
+  return chainProvider();
 }
 
-export async function complete(prompt: string, tier: AiTier): Promise<string> {
-  return (await getProvider()).complete(prompt, { tier });
+export async function complete(prompt: string, tier: AiTier, purpose?: string): Promise<string> {
+  return (await getProvider()).complete(prompt, { tier, purpose });
 }
 
-export async function completeJson<T>(prompt: string, tier: AiTier): Promise<T> {
+export async function completeJson<T>(prompt: string, tier: AiTier, purpose?: string): Promise<T> {
   const provider = await getProvider();
-  const text = await provider.complete(prompt, { tier });
+  const text = await provider.complete(prompt, { tier, purpose });
   try {
     return extractJson<T>(text);
   } catch {
     // One repair attempt: models occasionally wrap JSON in prose.
     const retry = await provider.complete(
       `${prompt}\n\nYour previous reply could not be parsed. Reply with the JSON only, no other text.`,
-      { tier },
+      { tier, purpose: purpose ? `${purpose} (retry)` : undefined },
     );
     return extractJson<T>(retry);
   }
