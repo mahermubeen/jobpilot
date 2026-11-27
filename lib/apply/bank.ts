@@ -1,6 +1,22 @@
 import type { Profile } from "@/lib/cv/types";
 import type { ApplyFacts } from "@/lib/settings";
-import { pickOption, type FormField } from "./answers";
+import type { FormField } from "./answers";
+import { escapeRegExp as esc } from "@/lib/util";
+import { authorisationText, authorisedIn, countriesIn, experienceTopic, isStatusList, questionCountries, statusAnswer, techYears, timeZonePatterns } from "./bank-facts";
+import {
+  DECLINE,
+  durationAnswer,
+  factAnswer,
+  NO,
+  numberAnswer,
+  optionLike,
+  parseCvDate,
+  type Shaped,
+  skip,
+  val,
+  YES,
+  yesNo,
+} from "./bank-shapes";
 import { resolveSalary, salaryQuestion, type SalaryJob } from "./salary";
 
 /**
@@ -13,223 +29,16 @@ import { resolveSalary, salaryQuestion, type SalaryJob } from "./salary";
 export type BankJob = SalaryJob & { id?: string; source?: string | null; cover?: string | null };
 export type BankContext = { profile: Profile; facts: ApplyFacts; job: BankJob; now?: Date };
 
-export type BankAnswer = {
-  rule: string;
-  value: unknown;
-  /** Leave the field empty on purpose (optional referrer name, marketing opt-in): no AI. */
-  skip?: boolean;
-  /** Overrides the 60-word limit for open answers (a cover letter goes in whole). */
-  maxWords?: number;
-  /** Salary for a job outside your home market with no stated range: needs the market rate. */
-  needsMarket?: true;
-};
+export type BankAnswer = Shaped & { rule: string };
 
-type Rule = { id: string; match: (label: string, field: FormField) => boolean; answer: (field: FormField, ctx: BankContext, label: string) => Omit<BankAnswer, "rule"> | null };
+export { countriesIn, experienceTopic, techYears } from "./bank-facts";
+export { parseCvDate, pickNumberOption } from "./bank-shapes";
 
-// ---------- helpers ----------
-
-const has = (re: RegExp) => (label: string) => re.test(label);
-const val = (value: unknown) => (value === null || value === undefined || value === "" ? null : { value });
-const skip = () => ({ value: null, skip: true });
-
-const YES = [/^yes\b/i, /^(i )?(agree|accept|consent|acknowledge|confirm|certify|understand)\b/i, /^true$/i, /^y$/i];
-const NO = [/^no\b/i, /^(i )?(do not|don't|am not|have not|haven't|will not|won't|disagree)\b/i, /^false$/i, /^n$/i];
-const DECLINE = [/decline/i, /prefer not/i, /(do not|don't) (wish|want)/i, /not (to )?(say|disclose|answer|specify|identify)/i, /rather not/i];
-
-/** The first option matching any pattern, in pattern order. */
-function optionLike(options: string[], patterns: RegExp[]): string | null {
-  for (const re of patterns) {
-    const hit = options.find((o) => re.test(o.trim()));
-    if (hit) return hit;
-  }
-  return null;
-}
-
-/** A yes/no answer shaped for the field: an option, a tick, or the word. */
-function yesNo(field: FormField, yes: boolean): Omit<BankAnswer, "rule"> | null {
-  if (field.options?.length) {
-    const hit = optionLike(field.options, yes ? YES : NO);
-    return hit ? { value: field.type === "checkbox" ? [hit] : hit } : null;
-  }
-  if (field.type === "checkbox") return yes ? { value: "yes" } : skip();
-  return { value: yes ? "Yes" : "No" };
-}
-
-/** A fact such as "Male", "No" or "Prefer not to say" shaped for the field. */
-function factAnswer(field: FormField, fact: string, extra: RegExp[] = []): Omit<BankAnswer, "rule"> | null {
-  const f = fact.trim();
-  if (!f) return null;
-  if (!field.options?.length) return field.type === "checkbox" ? null : { value: f };
-  const patterns = DECLINE.some((re) => re.test(f)) ? DECLINE : /^no$/i.test(f) ? [...extra, ...NO] : /^yes$/i.test(f) ? [...extra, ...YES] : extra;
-  const hit = optionLike(field.options, patterns) ?? pickOption(field.options, f);
-  return hit ? { value: hit } : null;
-}
-
-const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-
-/** "Jan 2025", "Sept 2025", "2022", "Present" → a date (present → now). */
-export function parseCvDate(text: string, now = new Date()): Date | null {
-  const t = text.trim().toLowerCase();
-  if (!t) return null;
-  if (/present|current|now|today/.test(t)) return now;
-  const year = t.match(/\b(19|20)\d{2}\b/)?.[0];
-  if (!year) return null;
-  const month = MONTHS.findIndex((m) => t.includes(m));
-  return new Date(Number(year), month >= 0 ? month : 0, 1);
-}
-
-const yearsBetween = (a: Date, b: Date) => (b.getTime() - a.getTime()) / (365.25 * 24 * 3600 * 1000);
-
-/** Picks the option whose number range holds n ("0-1", "3 - 5 years", "5+", "Less than 1"). */
-export function pickNumberOption(options: string[], n: number): string | null {
-  let nearest: { o: string; d: number } | null = null;
-  for (const o of options) {
-    const nums = [...o.matchAll(/\d+(\.\d+)?/g)].map((m) => Number(m[0]));
-    if (!nums.length) continue;
-    let lo = nums[0];
-    let hi = nums[1] ?? nums[0];
-    if (/\+|more|above|over|or greater|at least/i.test(o) && nums.length === 1) hi = Infinity;
-    if (/less|under|below|fewer|</i.test(o) && nums.length === 1) {
-      hi = nums[0] - 0.001;
-      lo = 0;
-    }
-    if (n >= lo && n <= hi) return o;
-    const d = Math.min(Math.abs(n - lo), Math.abs(n - hi));
-    if (!nearest || d < nearest.d) nearest = { o, d };
-  }
-  return nearest?.o ?? null;
-}
-
-/** A number as the field wants it: an option range, digits, or text. */
-function numberAnswer(field: FormField, n: number, unit = ""): Omit<BankAnswer, "rule"> | null {
-  if (field.options?.length) {
-    const hit = pickNumberOption(field.options, n);
-    return hit ? { value: hit } : null;
-  }
-  if (field.type === "number" || !unit) return { value: String(n) };
-  return { value: `${n} ${unit}` };
-}
-
-/** Days in a notice-period option ("Immediately", "2 weeks", "1 month"); null when it names no time. */
-function optionDays(o: string): number | null {
-  const t = o.toLowerCase();
-  if (/immediate|right away|asap|now/.test(t)) return 0;
-  const n = Number(t.match(/\d+/)?.[0]);
-  if (!Number.isFinite(n)) return null;
-  if (/month/.test(t)) return n * 30;
-  if (/week/.test(t)) return n * 7;
-  if (/day/.test(t)) return n;
-  return null;
-}
-
-function durationAnswer(field: FormField, days: number, text: string): Omit<BankAnswer, "rule"> | null {
-  if (field.options?.length) {
-    let best: { o: string; d: number } | null = null;
-    for (const o of field.options) {
-      const od = optionDays(o);
-      if (od === null) continue;
-      const d = Math.abs(od - days);
-      if (!best || d < best.d) best = { o, d };
-    }
-    return best ? { value: best.o } : null;
-  }
-  return field.type === "number" ? { value: String(days) } : { value: text };
-}
-
-// ---------- countries ----------
-
-const COUNTRIES: [string, RegExp][] = [
-  ["United States", /\b(u\.s\.a?\.?|usa|united states|america)\b/i],
-  ["United Kingdom", /\b(u\.k\.|uk|united kingdom|britain|great britain|england)\b/i],
-  ["European Union", /\b(eu|e\.u\.|european union|eea|europe)\b/i],
-  ["Canada", /\bcanad/i],
-  ["Australia", /\baustralia/i],
-  ["New Zealand", /\bnew zealand\b/i],
-  ["Germany", /\bgerman/i],
-  ["Netherlands", /\b(netherlands|holland|dutch)\b/i],
-  ["Ireland", /\bireland\b/i],
-  ["France", /\bfrance\b/i],
-  ["Spain", /\bspain\b/i],
-  ["Sweden", /\bsweden\b/i],
-  ["Switzerland", /\bswitzerland\b/i],
-  ["Poland", /\bpoland\b/i],
-  ["United Arab Emirates", /\b(uae|u\.a\.e\.|united arab emirates|dubai|abu dhabi)\b/i],
-  ["Saudi Arabia", /\b(saudi|ksa|riyadh|jeddah)\b/i],
-  ["Qatar", /\b(qatar|doha)\b/i],
-  ["Singapore", /\bsingapore\b/i],
-  ["India", /\bindia\b/i],
-  ["Pakistan", /\b(pakistan|islamabad|lahore|karachi|rawalpindi)\b/i],
-];
-
-/** Countries a text names. "US" only counts in capitals, so "about us" is not America. */
-export function countriesIn(text: string): string[] {
-  const out = COUNTRIES.filter(([, re]) => re.test(text)).map(([name]) => name);
-  if (/\bUS\b/.test(text) && !out.includes("United States")) out.push("United States");
-  return out.filter((c) => !(c === "United States" && /\b(about|contact|join|with|for) us\b/i.test(text) && !/\bUS\b|u\.s\.|usa|united states|america/i.test(text)));
-}
-
-const EU_MEMBERS = ["Germany", "Netherlands", "Ireland", "France", "Spain", "Sweden", "Poland"];
-
-function authorisedIn(country: string, facts: ApplyFacts): boolean {
-  const mine = facts.authorizedCountries.flatMap((c) => countriesIn(c).concat(c.trim()));
-  if (mine.some((c) => c.toLowerCase() === country.toLowerCase())) return true;
-  return EU_MEMBERS.includes(country) && mine.includes("European Union");
-}
-
-/** The countries a work-rights question is about: named in it, else where the job is. */
-function questionCountries(label: string, job: BankJob): string[] {
-  const named = countriesIn(label);
-  if (named.length) return named;
-  if (/this (country|location)|where (this|the) (job|role|position)|job location|country (in which|where)/i.test(label)) {
-    return countriesIn(job.location ?? "");
-  }
-  return countriesIn(job.location ?? "");
-}
-
-// ---------- tech experience ----------
-
-const GENERIC_EXPERIENCE =
-  /^(professional|work|working|relevant|industry|total|overall|software|software (development|engineering)|engineering|development|programming|it|tech|technology|full[- ]?time|related|similar|commercial|hands-on|practical|paid|post[- ]graduate|this|the|a|an)(\s+(experience|work|field|role|industry|engineering|development))*$/i;
-
-/** The technology a years-of-experience question asks about, or "" for total experience; null when not such a question. */
-export function experienceTopic(label: string): string | null {
-  const l = label.replace(/\s+/g, " ").trim();
-  if (!/\bexperience\b|\b(worked|working|using|coding|programming)\b/i.test(l) || !/\byears?\b|how (long|much)/i.test(l)) return null;
-  const patterns = [
-    /years? of ([\w.+#/ -]{1,40}?) (?:experience|development|programming)/i,
-    /(?:experience|worked|working|proficien\w*|familiar\w*)\s+(?:with|in|using|on)\s+([^?.,;:()]{1,40})/i,
-    /years? (?:have you )?(?:been )?(?:using|working with|working in|with|in)\s+([^?.,;:()]{1,40})/i,
-    /(?:experience|years?)\b[^?]*?\b(?:with|in|using|on)\s+([^?.,;:()]{1,40})/i,
-  ];
-  for (const re of patterns) {
-    const m = l.match(re);
-    if (!m) continue;
-    const topic = m[1]
-      .replace(/\b(do you have|have you|you have|professionally|commercially|in total|total|overall)\b/gi, "")
-      .replace(/\s+(development|programming|experience|years?)$/i, "")
-      .trim();
-    if (!topic || GENERIC_EXPERIENCE.test(topic)) return "";
-    return topic;
-  }
-  return "";
-}
-
-/** Years using a technology, from the CV roles that mention it; null when no role does. */
-export function techYears(topic: string, profile: Profile, now = new Date()): number | null {
-  const words = topic.toLowerCase().split(/\s*(?:\/|,| or | and )\s*/).map((w) => w.trim()).filter(Boolean);
-  const mentions = (text: string) =>
-    words.some((w) => new RegExp(`(^|[^a-z0-9])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`, "i").test(text));
-  let earliest: Date | null = null;
-  for (const role of profile.experience) {
-    if (!mentions([role.title, ...role.bullets].join(" "))) continue;
-    const start = parseCvDate(role.start, now);
-    if (start && (!earliest || start < earliest)) earliest = start;
-  }
-  if (!earliest) return null;
-  return Math.max(1, Math.round(yearsBetween(earliest, now)));
-}
+type Rule = { id: string; match: (label: string, field: FormField) => boolean; answer: (field: FormField, ctx: BankContext, label: string) => Shaped | null };
 
 // ---------- the rules ----------
+
+const has = (re: RegExp) => (label: string) => re.test(label);
 
 const MARKETING = /newsletter|marketing|promotion|\bsms\b|text messages?|whatsapp|job alerts?|\bnews\b|updates? (about|on|from)|future (job|opportunit|role|position|openings)|talent (community|pool|network)|stay in touch|subscribe|other (roles|positions|opportunities)/i;
 const CONSENT = /privacy|terms|conditions|consent|\bagree\b|acknowledge|certify|i confirm|accurate|true and (complete|correct)|gdpr|data (processing|protection|retention|privacy)|i (have )?read|declar|background check|authori[sz]e .*(contact|process|verif|share)/i;
@@ -258,7 +67,7 @@ const RULES: Rule[] = [
     id: "sponsorship",
     match: (l) => /sponsor|\bh-?1b\b/i.test(l) && !/without (any |visa |employer |the need for )*sponsor/i.test(l),
     answer: (f, ctx, l) => {
-      const countries = questionCountries(l, ctx.job);
+      const countries = questionCountries(l, ctx.job.location);
       if (!countries.length) return null;
       const authorised = countries.every((c) => authorisedIn(c, ctx.facts));
       return yesNo(f, !authorised);
@@ -268,22 +77,11 @@ const RULES: Rule[] = [
     id: "work-authorisation",
     match: has(/authori[sz](ed|ation)|eligib\w* to work|legally (able|allowed|permitted|entitled)? ?(to )?work|right to work|work (permit|visa)|permission to work|visa status|immigration status|citizen/i),
     answer: (f, ctx, l) => {
-      const countries = questionCountries(l, ctx.job);
-      const authorised = countries.length ? countries.every((c) => authorisedIn(c, ctx.facts)) : null;
       if (/remote(ly)? from|from your (current )?(country|location)/i.test(l)) return yesNo(f, true);
-      if (f.options?.length && !f.options.every((o) => YES.concat(NO).some((re) => re.test(o)))) {
-        // A status list: "Citizen", "Permanent resident", "Require sponsorship"…
-        if (authorised === null) return null;
-        return authorised
-          ? val(optionLike(f.options, [/citizen/i, /authori[sz]ed/i, /no sponsorship/i, /^yes/i]))
-          : val(optionLike(f.options, [/(require|need)\w* .*sponsor/i, /sponsor/i, /not authori[sz]ed/i, /^no\b/i]));
-      }
-      if (authorised !== null && f.type !== "text" && f.type !== "textarea") return yesNo(f, authorised);
-      if (f.type === "text" || f.type === "textarea") {
-        if (authorised !== null && /\?$|^(are|do|can|will|is)\b/i.test(l.trim())) return { value: authorised ? "Yes" : "No" };
-        const list = ctx.facts.authorizedCountries.join(", ");
-        return list ? { value: `Authorised to work in ${list}; would need visa sponsorship elsewhere.` } : null;
-      }
+      const countries = questionCountries(l, ctx.job.location);
+      const authorised = countries.length ? countries.every((c) => authorisedIn(c, ctx.facts)) : null;
+      if (isStatusList(f)) return statusAnswer(f.options!, authorised);
+      if (f.type === "text" || f.type === "textarea") return authorisationText(l, authorised, ctx.facts.authorizedCountries);
       return authorised === null ? null : yesNo(f, authorised);
     },
   },
@@ -443,7 +241,7 @@ const RULES: Rule[] = [
       const src = (ctx.job.source ?? "").toLowerCase();
       const name = src.includes("linkedin") ? "LinkedIn" : src.includes("indeed") ? "Indeed" : src.includes("google") ? "Google" : "Company website";
       if (!f.options?.length) return { value: name };
-      return val(optionLike(f.options, [new RegExp(name, "i"), /job board/i, /website|careers? (page|site)/i, /online|internet/i, /other/i]));
+      return val(optionLike(f.options, [new RegExp(esc(name), "i"), /job board/i, /website|careers? (page|site)/i, /online|internet/i, /other/i]));
     },
   },
   {
@@ -454,7 +252,7 @@ const RULES: Rule[] = [
   {
     id: "pronouns",
     match: has(/pronoun/i),
-    answer: (f, ctx) => factAnswer(f, ctx.facts.pronouns, [new RegExp(`^${ctx.facts.pronouns.split("/")[0]}\\b`, "i")]),
+    answer: (f, ctx) => factAnswer(f, ctx.facts.pronouns, [new RegExp(`^${esc(ctx.facts.pronouns.split("/")[0])}\\b`, "i")]),
   },
   {
     id: "phone-country-code",
@@ -463,26 +261,27 @@ const RULES: Rule[] = [
       const code = ctx.profile.phone.match(/^\+\d{1,3}/)?.[0];
       if (!code) return null;
       if (!f.options?.length) return { value: code };
-      return val(optionLike(f.options, [new RegExp(`\\${code}\\b`), new RegExp(ctx.facts.country, "i")]));
+      return val(optionLike(f.options, [new RegExp(`${esc(code)}\\b`), new RegExp(esc(ctx.facts.country), "i")]));
     },
   },
   {
     id: "nationality",
     match: has(/nationality|citizenship$/i),
-    answer: (f, ctx) => factAnswer(f, ctx.facts.nationality, [new RegExp(ctx.facts.nationality, "i"), new RegExp(ctx.facts.country, "i")]),
+    answer: (f, ctx) => factAnswer(f, ctx.facts.nationality, [new RegExp(esc(ctx.facts.nationality), "i"), new RegExp(esc(ctx.facts.country), "i")]),
   },
   {
     id: "country",
     match: has(/^(country|country of residence|current country|country\/region|which country (do )?you (live|reside|are based)|country you (live|reside|are based) in|country of (current )?residence)\b/i),
-    answer: (f, ctx) => factAnswer(f, ctx.facts.country, [new RegExp(`^${ctx.facts.country}`, "i")]),
+    answer: (f, ctx) => factAnswer(f, ctx.facts.country, [new RegExp(`^${esc(ctx.facts.country)}`, "i")]),
   },
   {
     id: "time-zone",
     match: has(/time ?zone/i),
-    answer: (f, ctx) =>
-      f.options?.length
-        ? val(optionLike(f.options, [/\+0?5(:00)?\b/, /pakistan|karachi|pkt/i, new RegExp(ctx.facts.timezone.split(/[ (]/)[0] || "^$", "i")]))
-        : val(ctx.facts.timezone),
+    answer: (f, ctx) => {
+      const tz = ctx.facts.timezone.trim();
+      if (!tz) return null;
+      return f.options?.length ? val(optionLike(f.options, timeZonePatterns(tz, ctx.now))) : val(tz);
+    },
   },
   {
     id: "hours-overlap",
@@ -499,7 +298,7 @@ const RULES: Rule[] = [
         if (!wanted.length) return null;
         return { value: f.type === "checkbox" ? wanted : wanted[0] };
       }
-      const asked = types.find((t) => new RegExp(t.replace("-", "[- ]?"), "i").test(l));
+      const asked = types.find((t) => new RegExp(esc(t).replace("-", "[- ]?"), "i").test(l));
       return yesNo(f, !!asked);
     },
   },
@@ -510,7 +309,7 @@ const RULES: Rule[] = [
       if (!f.options?.length || f.options.every((o) => YES.concat(NO).some((re) => re.test(o)))) {
         return /^(do|are|can|is)\b/i.test(l.trim()) || f.type === "checkbox" || f.options?.length ? yesNo(f, true) : val(ctx.facts.english);
       }
-      return val(optionLike(f.options, [new RegExp(`^${ctx.facts.english}`, "i"), /native|bilingual/i, /fluent/i, /full professional/i, /professional/i, /advanced|\bc2\b|\bc1\b/i]));
+      return val(optionLike(f.options, [new RegExp(`^${esc(ctx.facts.english)}`, "i"), /native|bilingual/i, /fluent/i, /full professional/i, /professional/i, /advanced|\bc2\b|\bc1\b/i]));
     },
   },
   {
@@ -547,7 +346,7 @@ const RULES: Rule[] = [
     match: has(/\brace\b|ethnic/i),
     answer: (f, ctx) => {
       const e = ctx.facts.ethnicity;
-      const extra = e && !DECLINE.some((re) => re.test(e)) ? [new RegExp(`^${e}\\b`, "i"), new RegExp(`\\b${e}\\b`, "i")] : [];
+      const extra = e && !DECLINE.some((re) => re.test(e)) ? [new RegExp(`^${esc(e)}\\b`, "i"), new RegExp(`\\b${esc(e)}\\b`, "i")] : [];
       return factAnswer(f, e, extra);
     },
   },
@@ -574,7 +373,7 @@ const RULES: Rule[] = [
   {
     id: "region",
     match: has(/^(state|province|region|state\/province|state or province)\b/i),
-    answer: (f, ctx) => (ctx.facts.region ? factAnswer(f, ctx.facts.region, [new RegExp(ctx.facts.region.split(" ")[0], "i")]) : null),
+    answer: (f, ctx) => (ctx.facts.region ? factAnswer(f, ctx.facts.region, [new RegExp(esc(ctx.facts.region.split(" ")[0]), "i")]) : null),
   },
   {
     id: "city",
@@ -582,7 +381,7 @@ const RULES: Rule[] = [
     answer: (f, ctx, l) => {
       const { city, country } = ctx.facts;
       if (!city) return null;
-      if (f.options?.length) return val(optionLike(f.options, [new RegExp(`^${city}`, "i"), new RegExp(city, "i")]));
+      if (f.options?.length) return val(optionLike(f.options, [new RegExp(`^${esc(city)}`, "i"), new RegExp(esc(city), "i")]));
       return { value: /city|town/i.test(l) ? city : [city, country].filter(Boolean).join(", ") };
     },
   },

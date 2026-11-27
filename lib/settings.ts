@@ -262,19 +262,36 @@ function migrateChain(saved: LegacyAi | undefined): ChainEntry[] {
   return chain;
 }
 
+type LegacyFacts = Partial<ApplyFacts> & { salary?: ApplyFacts["salary"] };
+
+/** One rule per old free-text question: does it apply, and what fact it gives. First match wins. */
+const LEGACY_FACT_RULES: { matches: (q: string, num: number) => boolean; apply: (out: LegacyFacts, a: string, num: number) => void }[] = [
+  {
+    matches: (q, num) => /salary/.test(q) && num > 0,
+    apply: (out, _a, num) => (out.salary = { currency: num >= 50_000 ? "PKR" : "USD", target: num, last: 0, floor: 0 }),
+  },
+  {
+    matches: (q, num) => /notice/.test(q) && num >= 0,
+    apply: (out, a, num) => (out.noticeDays = /week/i.test(a) ? num * 7 : /month/i.test(a) ? num * 30 : num),
+  },
+  {
+    matches: (q) => /authori[sz]/.test(q),
+    apply: (out, a) => (out.authorizedCountries = a.split(/[,;/]| and /).map((c) => c.trim()).filter(Boolean)),
+  },
+  { matches: (q) => /relocat/.test(q), apply: (out, a) => (out.relocate = /^y/i.test(a)) },
+  { matches: (q, num) => /years/.test(q) && num > 0, apply: (out, _a, num) => (out.totalYears = String(num)) },
+];
+
 /** Fills facts from the free-text answers saved before facts existed. */
 function migrateFacts(answers: { question: string; answer: string }[] | undefined): Partial<ApplyFacts> {
-  const out: Partial<ApplyFacts> & { salary?: ApplyFacts["salary"] } = {};
+  const out: LegacyFacts = {};
   for (const { question, answer } of answers ?? []) {
     const q = question.toLowerCase();
     const a = answer.trim();
     if (!a) continue;
     const num = Number(a.replace(/[^\d.]/g, ""));
-    if (/salary/.test(q) && num > 0) out.salary = { currency: num >= 50_000 ? "PKR" : "USD", target: num, last: 0, floor: 0 };
-    else if (/notice/.test(q) && num >= 0) out.noticeDays = /week/i.test(a) ? num * 7 : /month/i.test(a) ? num * 30 : num;
-    else if (/authori[sz]/.test(q)) out.authorizedCountries = a.split(/[,;/]| and /).map((c) => c.trim()).filter(Boolean);
-    else if (/relocat/.test(q)) out.relocate = /^y/i.test(a);
-    else if (/years/.test(q) && num > 0) out.totalYears = String(num);
+    // eslint-disable-next-line no-restricted-syntax -- LEGACY_FACT_RULES is a fixed table of 6 rules (first match wins), so this is O(answers), not O(n²)
+    LEGACY_FACT_RULES.find((r) => r.matches(q, num))?.apply(out, a, num);
   }
   return out;
 }

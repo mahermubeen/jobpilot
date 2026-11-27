@@ -4,7 +4,7 @@ import type { Profile } from "@/lib/cv/types";
 import type { ApplyFacts } from "@/lib/settings";
 import { profileAnswer, validateAnswer, type AnswerSource, type FieldAnswer, type FormField, type SavedAnswer } from "./answers";
 import { bankAnswer, type BankJob } from "./bank";
-import { findAnswer, getLearned, isJobSpecific, learn, markUsed, questionKey } from "./learned";
+import { findAnswer, getLearned, isJobSpecific, learn, type LearnedAnswer, markUsed, questionKey } from "./learned";
 import { resolveSalary } from "./salary";
 
 export type FillStats = Record<AnswerSource, number> & {
@@ -69,105 +69,169 @@ export async function resolveAnswers(
   return result;
 }
 
-async function resolve(input: ResolveInput, deps: Deps): Promise<{ answers: FieldAnswer[]; stats: FillStats }> {
-  const { profile, facts, saved, job, fields } = input;
-  const answers = new Map<string, FieldAnswer>();
-  const stats: FillStats = {
-    profile: 0, bank: 0, saved: 0, learned: 0, ai: 0, none: 0, skipped: 0,
-    calls: [], aiCalls: 0, inTokens: 0, outTokens: 0, aiName: null,
-  };
-  const learned = await getLearned();
-  const byYou = learned.filter((e) => e.by === "you");
-  // AI tokens go to required questions. A form that marks nothing as required
-  // gets every open question answered, so nothing is skipped by mistake.
-  const anyRequired = fields.some((f) => f.required);
-  const needsAi = (f: FormField) => input.ai !== false && (!!input.forceAi || !anyRequired || !!f.required);
-  const usedLearned: string[] = [];
-  const needsMarket: FormField[] = [];
-  const ctx = { profile, facts, job };
-  const set = (f: FormField, value: FieldAnswer["value"], source: AnswerSource, skip = false, rule?: string) =>
-    answers.set(f.id, { id: f.id, value, source, ...(skip ? { skip } : {}), ...(rule ? { rule } : {}) });
+type Resolved = { answers: FieldAnswer[]; stats: FillStats };
 
-  for (const f of fields) {
-    if (f.type === "file") continue;
-    const fromProfile = validateAnswer(f, profileAnswer(f, profile));
-    if (fromProfile !== null) {
-      set(f, fromProfile, "profile");
-      continue;
-    }
-    // An answer you gave yourself on an earlier form beats the bank's guess.
-    const yours = findAnswer(f, byYou, job.id);
-    if (yours) {
-      set(f, yours.value, "saved");
-      usedLearned.push(yours.entry.id);
-      continue;
-    }
-    const bank = bankAnswer(f, ctx);
-    if (bank?.skip) {
-      set(f, null, "bank", true, bank.rule);
-      continue;
-    }
-    if (bank?.needsMarket) {
-      needsMarket.push(f);
-      continue;
-    }
-    if (bank) {
-      const v = validateAnswer(f, bank.value, bank.maxWords);
-      if (v !== null) {
-        set(f, v, "bank", false, bank.rule);
-        continue;
-      }
-    }
-    const mine = findAnswer(f, saved.map((s) => ({ ...s, scope: "all" })), job.id);
-    if (mine) {
-      set(f, mine.value, "saved");
-      continue;
-    }
-    const remembered = findAnswer(f, learned, job.id);
-    if (remembered) {
-      set(f, remembered.value, "learned");
-      usedLearned.push(remembered.entry.id);
-    }
+const emptyStats = (): FillStats => ({
+  profile: 0, bank: 0, saved: 0, learned: 0, ai: 0, none: 0, skipped: 0,
+  calls: [], aiCalls: 0, inTokens: 0, outTokens: 0, aiName: null,
+});
+
+/**
+ * Fills one form page. Holds the answers found so far and which remembered
+ * answers were used; each answer source is one method, cheapest first.
+ */
+class FormResolver {
+  private readonly answers = new Map<string, FieldAnswer>();
+  readonly usedLearned: string[] = [];
+  private readonly needsMarket: FormField[] = [];
+  private readonly byYou: LearnedAnswer[];
+  private readonly anyRequired: boolean;
+
+  constructor(
+    private readonly input: ResolveInput,
+    private readonly deps: Deps,
+    private readonly learned: LearnedAnswer[],
+  ) {
+    this.byYou = learned.filter((e) => e.by === "you");
+    this.anyRequired = input.fields.some((f) => f.required);
   }
 
-  // Salary for a job with no stated range outside your home market: the market rate, asked once per role and place.
-  if (needsMarket.length) {
+  /**
+   * AI tokens go to required questions. A form that marks nothing as required
+   * gets every open question answered, so nothing is skipped by mistake.
+   */
+  needsAi = (f: FormField) => this.input.ai !== false && (!!this.input.forceAi || !this.anyRequired || !!f.required);
+
+  private set(f: FormField, value: FieldAnswer["value"], source: AnswerSource, extra: { skip?: boolean; rule?: string } = {}) {
+    this.answers.set(f.id, { id: f.id, value, source, ...(extra.skip ? { skip: true } : {}), ...(extra.rule ? { rule: extra.rule } : {}) });
+  }
+
+  private fromProfile(f: FormField): boolean {
+    const value = validateAnswer(f, profileAnswer(f, this.input.profile));
+    if (value === null) return false;
+    this.set(f, value, "profile");
+    return true;
+  }
+
+  private fromLearned(f: FormField, entries: LearnedAnswer[], source: AnswerSource): boolean {
+    const hit = findAnswer(f, entries, this.input.job.id);
+    if (!hit) return false;
+    this.set(f, hit.value, source);
+    this.usedLearned.push(hit.entry.id);
+    return true;
+  }
+
+  private fromBank(f: FormField): boolean {
+    const { profile, facts, job } = this.input;
+    const bank = bankAnswer(f, { profile, facts, job });
+    if (!bank) return false;
+    if (bank.skip) {
+      this.set(f, null, "bank", { skip: true, rule: bank.rule });
+      return true;
+    }
+    if (bank.needsMarket) {
+      this.needsMarket.push(f);
+      return true;
+    }
+    const value = validateAnswer(f, bank.value, bank.maxWords);
+    if (value === null) return false;
+    this.set(f, value, "bank", { rule: bank.rule });
+    return true;
+  }
+
+  private fromSaved(f: FormField): boolean {
+    const mine = findAnswer(f, this.input.saved.map((s) => ({ ...s, scope: "all" })), this.input.job.id);
+    if (!mine) return false;
+    this.set(f, mine.value, "saved");
+    return true;
+  }
+
+  /** Profile, then an answer you gave yourself (it beats the bank's guess), the bank, your saved answers, remembered answers. */
+  answerFromKnown(f: FormField) {
+    if (f.type === "file") return;
+    const sources = [
+      () => this.fromProfile(f),
+      () => this.fromLearned(f, this.byYou, "saved"),
+      () => this.fromBank(f),
+      () => this.fromSaved(f),
+      () => this.fromLearned(f, this.learned, "learned"),
+    ];
+    sources.some((tryAnswer) => tryAnswer());
+  }
+
+  /** The market rate: remembered from an earlier job, or worked out by the AI now and remembered. */
+  private async marketUsdYear(market: string): Promise<{ usdYear: number | null; source: AnswerSource }> {
+    const { job, facts } = this.input;
+    const remembered = Number(findAnswer({ id: "market", label: market, type: "number" }, this.learned, job.id)?.value) || null;
+    if (remembered || !this.needsMarket.some(this.needsAi)) return { usdYear: remembered, source: remembered ? "learned" : "ai" };
+    const usdYear = await this.deps
+      .estimateMarketSalary({
+        role: job.role,
+        company: job.company,
+        location: job.location ?? null,
+        mode: job.mode ?? null,
+        years: facts.totalYears,
+        candidateLocation: [facts.city, facts.country].filter(Boolean).join(", "),
+      })
+      .catch(() => null);
+    if (usdYear) await learn([{ question: market, answer: String(usdYear), type: "number", scope: "all", by: "AI" }]);
+    return { usdYear, source: "ai" };
+  }
+
+  /** Salary for a job with no stated range outside your home market: the market rate, asked once per role and place. */
+  async answerSalaries() {
+    if (!this.needsMarket.length) return;
+    const { job, facts } = this.input;
     const market = `Market salary (USD per year): ${job.role} — ${job.location || job.mode || "remote"}`;
-    const marketField: FormField = { id: "market", label: market, type: "number" };
-    let usdYear = Number(findAnswer(marketField, learned, job.id)?.value) || null;
-    // The figure was remembered from an earlier job, or worked out by the AI just now.
-    const salarySource: AnswerSource = usdYear ? "learned" : "ai";
-    if (!usdYear && needsMarket.some(needsAi)) {
-      usdYear = await deps
-        .estimateMarketSalary({ role: job.role, company: job.company, location: job.location ?? null, mode: job.mode ?? null, years: facts.totalYears, candidateLocation: [facts.city, facts.country].filter(Boolean).join(", ") })
-        .catch(() => null);
-      if (usdYear) await learn([{ question: market, answer: String(usdYear), type: "number", scope: "all", by: "AI" }]);
-    }
-    for (const f of needsMarket) {
-      const r = usdYear ? resolveSalary(f, facts, job, usdYear) : null;
-      if (r && "value" in r) set(f, validateAnswer(f, r.value), salarySource, false, "salary");
+    const { usdYear, source } = await this.marketUsdYear(market);
+    if (!usdYear) return;
+    for (const f of this.needsMarket) {
+      const r = resolveSalary(f, facts, job, usdYear);
+      if (r && "value" in r) this.set(f, validateAnswer(f, r.value), source, { rule: "salary" });
     }
   }
 
-  const open = fields.filter((f) => f.type !== "file" && !answers.has(f.id) && needsAi(f));
-  if (open.length) {
-    const raw = await deps.answerFormFields(profile, { ...job, location: job.location ?? null, description: job.description ?? null, cover: job.cover ?? null }, saved, open, factsText(facts));
+  /** Whatever is left and worth tokens goes to the AI in one call per tier; every answer is remembered. */
+  async askAi() {
+    const { profile, job, saved, facts, fields } = this.input;
+    const open = fields.filter((f) => f.type !== "file" && !this.answers.has(f.id) && this.needsAi(f));
+    if (!open.length) return;
+    const raw = await this.deps.answerFormFields({
+      profile,
+      job: { ...job, location: job.location ?? null, description: job.description ?? null, cover: job.cover ?? null },
+      saved,
+      fields: open,
+      facts: factsText(facts),
+    });
     const toLearn: Parameters<typeof learn>[0] = [];
     for (const f of open) {
       const value = validateAnswer(f, raw.get(f.id));
-      set(f, value, value === null ? "none" : "ai");
+      this.set(f, value, value === null ? "none" : "ai");
       if (value !== null && questionKey(f.label)) {
         toLearn.push({ question: f.label, answer: value, type: f.type, scope: isJobSpecific(f, job.company) ? job.id : "all", by: "AI" });
       }
     }
     await learn(toLearn);
   }
-  await markUsed(usedLearned);
 
-  const out = fields.map((f) => answers.get(f.id) ?? { id: f.id, value: null, source: "none" as const });
-  for (const a of out) {
-    if (a.skip) stats.skipped++;
-    else if (fields.find((f) => f.id === a.id)?.type !== "file") stats[a.source]++;
+  result(): Resolved {
+    const { fields } = this.input;
+    const files = new Set(fields.filter((f) => f.type === "file").map((f) => f.id));
+    const answers = fields.map((f) => this.answers.get(f.id) ?? { id: f.id, value: null, source: "none" as const });
+    const stats = emptyStats();
+    for (const a of answers) {
+      if (a.skip) stats.skipped++;
+      else if (!files.has(a.id)) stats[a.source]++;
+    }
+    return { answers, stats };
   }
-  return { answers: out, stats };
+}
+
+async function resolve(input: ResolveInput, deps: Deps): Promise<Resolved> {
+  const resolver = new FormResolver(input, deps, await getLearned());
+  for (const f of input.fields) resolver.answerFromKnown(f);
+  await resolver.answerSalaries();
+  await resolver.askAi();
+  await markUsed(resolver.usedLearned);
+  return resolver.result();
 }

@@ -7,6 +7,7 @@ import {
   View,
   renderToBuffer,
 } from "@react-pdf/renderer";
+import type { ReactNode } from "react";
 import type { CvVariant, Profile } from "./types";
 import { sanitizeVariant } from "./variant";
 
@@ -30,112 +31,139 @@ const s = StyleSheet.create({
   line: { marginBottom: 1.5 },
 });
 
-function CvDocument({ profile, variant }: { profile: Profile; variant: CvVariant }) {
-  const bulletsFor = (company: string) =>
-    variant.experience.find((e) => e.company === company)?.bullets ?? [];
-  const projects = variant.projects
-    .map((name) => profile.projects.find((p) => p.name === name))
-    .filter((p): p is Profile["projects"][number] => !!p);
+type Project = Profile["projects"][number];
+
+const bareUrl = (url: string) => url.replace(/^https?:\/\/(www\.)?/, "");
+
+function Header({ profile, headline }: { profile: Profile; headline: string }) {
   const contactBits = [profile.location, profile.phone, profile.email].filter(Boolean);
-
   return (
-    <Document title={`${profile.name} - CV`} author={profile.name}>
-      <Page size="LETTER" style={s.page}>
-        <Text style={s.name}>{profile.name}</Text>
-        {variant.headline ? <Text style={s.headline}>{variant.headline}</Text> : null}
-        <Text style={s.contact}>{contactBits.join("  |  ")}</Text>
-        {profile.links.length ? (
-          <Text style={s.contact}>
-            {profile.links.map((l, i) => (
-              <Text key={l.url}>
-                {i ? "  |  " : ""}
-                <Link src={l.url} style={s.link}>
-                  {l.url.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")}
-                </Link>
-              </Text>
-            ))}
-          </Text>
-        ) : null}
+    <>
+      <Text style={s.name}>{profile.name}</Text>
+      {headline ? <Text style={s.headline}>{headline}</Text> : null}
+      <Text style={s.contact}>{contactBits.join("  |  ")}</Text>
+      {profile.links.length ? (
+        <Text style={s.contact}>
+          {profile.links.map((l, i) => (
+            <Text key={l.url}>
+              {i ? "  |  " : ""}
+              <Link src={l.url} style={s.link}>
+                {bareUrl(l.url).replace(/\/$/, "")}
+              </Link>
+            </Text>
+          ))}
+        </Text>
+      ) : null}
+    </>
+  );
+}
 
-        {variant.summary ? (
-          <View style={s.section}>
-            <Text style={s.h2}>Summary</Text>
-            <Text>{variant.summary}</Text>
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <View style={s.section}>
+      <Text style={s.h2}>{title}</Text>
+      {children}
+    </View>
+  );
+}
+
+function ExperienceSection({ profile, variant }: { profile: Profile; variant: CvVariant }) {
+  const bulletsFor = (company: string) => variant.experience.find((e) => e.company === company)?.bullets ?? [];
+  return (
+    <Section title="Experience">
+      {profile.experience.map((job) => (
+        <View key={`${job.company}-${job.start}`} style={s.job} wrap={false}>
+          <View style={s.row}>
+            <Text style={s.bold}>{job.company}</Text>
+            <Text style={s.bold}>
+              {job.start} - {job.end}
+            </Text>
           </View>
-        ) : null}
-
-        <View style={s.section}>
-          <Text style={s.h2}>Experience</Text>
-          {profile.experience.map((job) => (
-            <View key={`${job.company}-${job.start}`} style={s.job} wrap={false}>
-              <View style={s.row}>
-                <Text style={s.bold}>{job.company}</Text>
-                <Text style={s.bold}>
-                  {job.start} - {job.end}
-                </Text>
-              </View>
-              <View style={s.row}>
-                <Text style={s.italic}>{job.title}</Text>
-                <Text style={s.italic}>{job.location}</Text>
-              </View>
-              {bulletsFor(job.company).map((b) => (
-                <View key={b} style={s.bullet}>
-                  <Text style={s.dot}>•</Text>
-                  <Text style={s.bulletText}>{b}</Text>
-                </View>
-              ))}
+          <View style={s.row}>
+            <Text style={s.italic}>{job.title}</Text>
+            <Text style={s.italic}>{job.location}</Text>
+          </View>
+          {bulletsFor(job.company).map((b) => (
+            <View key={b} style={s.bullet}>
+              <Text style={s.dot}>•</Text>
+              <Text style={s.bulletText}>{b}</Text>
             </View>
           ))}
         </View>
+      ))}
+    </Section>
+  );
+}
 
+function ProjectRow({ p }: { p: Project }) {
+  return (
+    <View style={[s.row, s.line]}>
+      <Text style={{ flex: 1 }}>
+        <Text style={s.bold}>{p.name}</Text>
+        {p.description ? ` - ${p.description}` : ""}
+        {p.tech ? <Text style={s.italic}>{`  |  ${p.tech}`}</Text> : null}
+      </Text>
+      {p.url ? (
+        <Link src={/^https?:/.test(p.url) ? p.url : `https://${p.url}`} style={s.link}>
+          {bareUrl(p.url)}
+        </Link>
+      ) : null}
+    </View>
+  );
+}
+
+function SkillsSection({ skills }: { skills: CvVariant["skills"] }) {
+  return (
+    <Section title="Technical Skills">
+      {skills.map((g) => (
+        <Text key={g.category} style={s.line}>
+          <Text style={s.bold}>{g.category}: </Text>
+          {g.items.join(", ")}
+        </Text>
+      ))}
+    </Section>
+  );
+}
+
+function EducationSection({ education }: { education: Profile["education"] }) {
+  return (
+    <Section title="Education">
+      {education.map((e) => (
+        <View key={e.school} style={s.line}>
+          <View style={s.row}>
+            <Text style={s.bold}>{e.school}</Text>
+            <Text style={s.bold}>{[e.start, e.end].filter(Boolean).join(" - ")}</Text>
+          </View>
+          <Text style={s.italic}>{e.degree}</Text>
+        </View>
+      ))}
+    </Section>
+  );
+}
+
+function CvDocument({ profile, variant }: { profile: Profile; variant: CvVariant }) {
+  const byName = new Map<string, Project>();
+  for (const p of profile.projects) if (!byName.has(p.name)) byName.set(p.name, p);
+  const projects = variant.projects.map((name) => byName.get(name)).filter((p): p is Project => !!p);
+  return (
+    <Document title={`${profile.name} - CV`} author={profile.name}>
+      <Page size="LETTER" style={s.page}>
+        <Header profile={profile} headline={variant.headline} />
+        {variant.summary ? (
+          <Section title="Summary">
+            <Text>{variant.summary}</Text>
+          </Section>
+        ) : null}
+        <ExperienceSection profile={profile} variant={variant} />
         {projects.length ? (
-          <View style={s.section}>
-            <Text style={s.h2}>Projects</Text>
+          <Section title="Projects">
             {projects.map((p) => (
-              <View key={p.name} style={[s.row, s.line]}>
-                <Text style={{ flex: 1 }}>
-                  <Text style={s.bold}>{p.name}</Text>
-                  {p.description ? ` - ${p.description}` : ""}
-                  {p.tech ? <Text style={s.italic}>{`  |  ${p.tech}`}</Text> : null}
-                </Text>
-                {p.url ? (
-                  <Link src={/^https?:/.test(p.url) ? p.url : `https://${p.url}`} style={s.link}>
-                    {p.url.replace(/^https?:\/\/(www\.)?/, "")}
-                  </Link>
-                ) : null}
-              </View>
+              <ProjectRow key={p.name} p={p} />
             ))}
-          </View>
+          </Section>
         ) : null}
-
-        {variant.skills.length ? (
-          <View style={s.section}>
-            <Text style={s.h2}>Technical Skills</Text>
-            {variant.skills.map((g) => (
-              <Text key={g.category} style={s.line}>
-                <Text style={s.bold}>{g.category}: </Text>
-                {g.items.join(", ")}
-              </Text>
-            ))}
-          </View>
-        ) : null}
-
-        {profile.education.length ? (
-          <View style={s.section}>
-            <Text style={s.h2}>Education</Text>
-            {profile.education.map((e) => (
-              <View key={e.school} style={s.line}>
-                <View style={s.row}>
-                  <Text style={s.bold}>{e.school}</Text>
-                  <Text style={s.bold}>
-                    {[e.start, e.end].filter(Boolean).join(" - ")}
-                  </Text>
-                </View>
-                <Text style={s.italic}>{e.degree}</Text>
-              </View>
-            ))}
-          </View>
-        ) : null}
+        {variant.skills.length ? <SkillsSection skills={variant.skills} /> : null}
+        {profile.education.length ? <EducationSection education={profile.education} /> : null}
       </Page>
     </Document>
   );

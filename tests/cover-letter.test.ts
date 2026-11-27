@@ -9,9 +9,9 @@ const { emptyProfile } = await import("@/lib/cv/types");
 
 const profile = {
   ...emptyProfile,
-  name: "Sara Khan",
-  email: "sara@example.com",
-  phone: "+92 300 1234567",
+  name: "Avery Example",
+  email: "avery@example.com",
+  phone: "+1 555 0101",
   experience: [
     { company: "Acme", title: "Engineer", location: "Lahore", start: "2020", end: "now", bullets: ["Built chat for 2M users"] },
   ],
@@ -29,8 +29,8 @@ About me: 6 years as a Full Stack Engineer. I built chat for 2M users at Acme an
 
 Could I walk you through it in a 10-minute call?
 
-Sara Khan
-+92 300 1234567`;
+Avery Example
++1 555 0101`;
 
 const answer = (body = letter) => ({
   research: "They sell a contact-centre product.",

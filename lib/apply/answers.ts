@@ -1,5 +1,6 @@
 import type { Profile } from "@/lib/cv/types";
 import { linkKey, pageKey } from "@/lib/pipeline/dedupe";
+import { escapeRegExp } from "@/lib/util";
 
 /** One input found on an application form by the browser extension. */
 export type FormField = {
@@ -29,60 +30,84 @@ const MAX_FIELDS = 60;
 const clean = (s: unknown, max: number) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 const TYPES = new Set<string>(["text", "textarea", "number", "email", "tel", "url", "date", "select", "radio", "checkbox", "file"]);
 
-/** Normalises what the extension sends; anything malformed is dropped. */
+const MAX_OPTIONS = 300;
+
+function parseOptions(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const options = v.map((o) => clean(o, 160)).filter(Boolean).slice(0, MAX_OPTIONS);
+  return options.length ? options : undefined;
+}
+
+/** One field as the extension sent it, or null when it has no id or an unknown type. */
+function parseField(raw: unknown): FormField | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const id = clean(r.id, 80);
+  const type = clean(r.type, 20);
+  if (!id || !TYPES.has(type)) return null;
+  const options = parseOptions(r.options);
+  const maxLength = Number(r.maxLength);
+  return {
+    id,
+    label: clean(r.label, 400),
+    type: type as FormField["type"],
+    ...(options ? { options } : {}),
+    ...(r.required ? { required: true } : {}),
+    ...(maxLength > 0 ? { maxLength } : {}),
+  };
+}
+
+/** Normalises what the extension sends; anything malformed is dropped, and so are repeated ids. */
 export function parseFields(input: unknown): FormField[] {
   if (!Array.isArray(input)) return [];
-  const out: FormField[] = [];
   const seen = new Set<string>();
-  for (const raw of input.slice(0, MAX_FIELDS)) {
-    if (!raw || typeof raw !== "object") continue;
-    const r = raw as Record<string, unknown>;
-    const id = clean(r.id, 80);
-    const type = clean(r.type, 20);
-    if (!id || seen.has(id) || !TYPES.has(type)) continue;
-    seen.add(id);
-    const options = Array.isArray(r.options)
-      ? r.options.map((o) => clean(o, 160)).filter(Boolean).slice(0, 300)
-      : undefined;
-    const maxLength = Number(r.maxLength);
-    out.push({
-      id,
-      label: clean(r.label, 400),
-      type: type as FormField["type"],
-      ...(options?.length ? { options } : {}),
-      ...(r.required ? { required: true } : {}),
-      ...(maxLength > 0 ? { maxLength } : {}),
+  return input
+    .slice(0, MAX_FIELDS)
+    .map(parseField)
+    .filter((f): f is FormField => {
+      if (!f || seen.has(f.id)) return false;
+      seen.add(f.id);
+      return true;
     });
-  }
-  return out;
 }
 
 const linkTo = (profile: Profile, re: RegExp) =>
   profile.links.find((l) => re.test(l.label) || re.test(l.url))?.url ?? "";
 
+/** Field kinds that are never a plain contact detail. */
+const NOT_CONTACT: FormField["type"][] = ["checkbox", "file", "textarea"];
+
+type ContactRule = { matches: (field: FormField, label: string) => boolean; value: (profile: Profile, names: string[]) => string };
+
+/** Contact fields in order of precedence: the first that matches answers. */
+const CONTACT_RULES: ContactRule[] = [
+  { matches: (f, l) => f.type === "email" || /\be-?mail\b/.test(l), value: (p) => p.email },
+  { matches: (f, l) => f.type === "tel" || /\b(phone|mobile|contact number)\b/.test(l), value: (p) => p.phone },
+  { matches: (_f, l) => /\blinkedin\b/.test(l), value: (p) => linkTo(p, /linkedin/i) },
+  { matches: (_f, l) => /\bgithub\b/.test(l), value: (p) => linkTo(p, /github/i) },
+  { matches: (_f, l) => /\b(portfolio|personal (web)?site|website)\b/.test(l), value: (p) => linkTo(p, /portfolio|website|site/i) },
+  { matches: (_f, l) => /\bfirst name\b|\bgiven name\b/.test(l), value: (_p, names) => names[0] ?? "" },
+  { matches: (_f, l) => /\b(last name|surname|family name)\b/.test(l), value: (_p, names) => (names.length > 1 ? names.slice(1).join(" ") : "") },
+  {
+    matches: (_f, l) => /^(full |legal |your )?name\b/.test(l) && !/company|employer|school|university|referr/.test(l),
+    value: (p) => p.name,
+  },
+];
+
+/** Contact fields have short labels; a long one is a real question for the AI step. */
+const MAX_CONTACT_LABEL = 40;
+
 /** Contact details answered straight from the profile, with no AI involved. */
 export function profileAnswer(field: FormField, profile: Profile): string | null {
-  if (field.options?.length || field.type === "checkbox" || field.type === "file" || field.type === "textarea") {
-    return null;
-  }
+  if (field.options?.length || NOT_CONTACT.includes(field.type)) return null;
   const label = field.label.toLowerCase();
-  // Contact fields have short labels; a long one is a real question for the AI step.
-  if (label.length > 40) return null;
-  const names = profile.name.trim().split(/\s+/);
-  let value = "";
-  if (field.type === "email" || /\be-?mail\b/.test(label)) value = profile.email;
-  else if (field.type === "tel" || /\b(phone|mobile|contact number)\b/.test(label)) value = profile.phone;
-  else if (/\blinkedin\b/.test(label)) value = linkTo(profile, /linkedin/i);
-  else if (/\bgithub\b/.test(label)) value = linkTo(profile, /github/i);
-  else if (/\b(portfolio|personal (web)?site|website)\b/.test(label)) value = linkTo(profile, /portfolio|website|site/i);
-  else if (/\bfirst name\b|\bgiven name\b/.test(label)) value = names[0] ?? "";
-  else if (/\b(last name|surname|family name)\b/.test(label)) value = names.length > 1 ? names.slice(1).join(" ") : "";
-  else if (/^(full |legal |your )?name\b/.test(label) && !/company|employer|school|university|referr/.test(label)) value = profile.name;
+  if (label.length > MAX_CONTACT_LABEL) return null;
+  const rule = CONTACT_RULES.find((r) => r.matches(field, label));
+  const value = rule ? rule.value(profile, profile.name.trim().split(/\s+/)) : "";
   return value.trim() || null;
 }
 
 const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
-const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * The option a wanted answer means: an exact match first, then an option that
@@ -95,9 +120,9 @@ export function pickOption(options: string[], wanted: unknown): string | null {
   const exact = options.find((o) => same(o, w));
   if (exact) return exact;
   const lw = w.toLowerCase();
-  const starts = options.find((o) => new RegExp(`^${escape(lw)}\\b`, "i").test(o.trim()));
+  const starts = options.find((o) => new RegExp(`^${escapeRegExp(lw)}\\b`, "i").test(o.trim()));
   if (starts) return starts;
-  return options.find((o) => o.trim().length > 1 && new RegExp(`^${escape(o.trim().toLowerCase())}\\b`).test(lw)) ?? null;
+  return options.find((o) => o.trim().length > 1 && new RegExp(`^${escapeRegExp(o.trim().toLowerCase())}\\b`).test(lw)) ?? null;
 }
 
 /** Open answers stay short: at most this many words, cut at a full sentence. */
@@ -119,6 +144,32 @@ export function trimToSentences(text: string, maxWords: number, maxChars?: numbe
 
 const BLANK = /^(leave blank|n\/?a|unknown|not (stated|available|sure)|null|none)?$/i;
 
+/** Choice fields: only real options, and a list of them for checkbox groups. */
+function validateChoice(field: FormField, options: string[], value: unknown): FieldValue {
+  const pick = (v: unknown) => pickOption(options, v);
+  if (field.type !== "checkbox") return pick(Array.isArray(value) ? value[0] : value);
+  const picked = (Array.isArray(value) ? value : [value]).map(pick).filter((o): o is string => !!o);
+  return picked.length ? [...new Set(picked)] : null;
+}
+
+const matchOrNull = (re: RegExp) => (text: string) => (re.test(text) ? text : null);
+
+/** Per-type checks for free-text answers; types not listed keep the text, cut to the field's limit. */
+const TEXT_CHECKS: Partial<Record<FormField["type"], (text: string, field: FormField, maxWords: number) => FieldValue>> = {
+  checkbox: (text) => (/^(yes|true)$/i.test(text) ? "yes" : null),
+  number: (text) => {
+    const n = text.replace(/,/g, "");
+    return /^-?\d+(\.\d+)?$/.test(n) ? n : null;
+  },
+  date: matchOrNull(/^\d{4}-\d{2}-\d{2}$/),
+  email: matchOrNull(/^[^\s@]+@[^\s@]+\.[^\s@]+$/),
+  url: matchOrNull(/^https?:\/\/\S+$/i),
+  // A cut-off sentence reads worse than an empty box the user fills in.
+  textarea: (text, field, maxWords) => trimToSentences(text, maxWords, field.maxLength),
+};
+
+const cutToLimit = (text: string, field: FormField) => (field.maxLength && text.length > field.maxLength ? text.slice(0, field.maxLength) : text);
+
 /**
  * Makes an answer safe to put in a form: choices must be real options,
  * numbers must be numbers, and text respects the field's length limit.
@@ -126,37 +177,72 @@ const BLANK = /^(leave blank|n\/?a|unknown|not (stated|available|sure)|null|none
  */
 export function validateAnswer(field: FormField, value: unknown, maxWords = MAX_OPEN_WORDS): FieldValue {
   if (field.type === "file") return null;
-
-  if (field.options?.length) {
-    const pick = (v: unknown) => pickOption(field.options!, v);
-    if (field.type === "checkbox") {
-      const picked = (Array.isArray(value) ? value : [value]).map(pick).filter((o): o is string => !!o);
-      return picked.length ? [...new Set(picked)] : null;
-    }
-    return pick(Array.isArray(value) ? value[0] : value);
-  }
-
+  if (field.options?.length) return validateChoice(field, field.options, value);
   if (Array.isArray(value) || value === null || value === undefined) return null;
   const text = String(value).trim();
   if (BLANK.test(text)) return null;
-
-  if (field.type === "checkbox") return /^(yes|true)$/i.test(text) ? "yes" : null;
-  if (field.type === "number") {
-    const n = text.replace(/,/g, "");
-    return /^-?\d+(\.\d+)?$/.test(n) ? n : null;
-  }
-  if (field.type === "date") return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
-  if (field.type === "email") return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text) ? text : null;
-  if (field.type === "url") return /^https?:\/\/\S+$/i.test(text) ? text : null;
-  if (field.type === "textarea") {
-    // A cut-off sentence reads worse than an empty box the user fills in.
-    return trimToSentences(text, maxWords, field.maxLength);
-  }
-  if (field.maxLength && text.length > field.maxLength) return text.slice(0, field.maxLength);
-  return text;
+  const check = TEXT_CHECKS[field.type];
+  return check ? check(text, field, maxWords) : cutToLimit(text, field);
 }
 
 type JobLink = { id: string; link: string | null; sourceId?: string | null };
+
+type UrlParts = NonNullable<ReturnType<typeof urlParts>>;
+
+/**
+ * The same page with other query parameters, when the job is named by the path
+ * itself (not by ?id=…, which would mix up jobs sharing one page).
+ */
+function samePageMatch<T extends JobLink>(url: string, jobs: T[]): T | null {
+  const page = pageKey(url);
+  if (page.split("/").length <= 2) return null;
+  return jobs.find((j) => j.link && !linkKey(j.link).includes("?") && pageKey(j.link) === page) ?? null;
+}
+
+/** LinkedIn shows one posting under several URL shapes and country subdomains; the numeric id is stable. */
+function linkedInMatch<T extends JobLink>(url: string, jobs: T[]): T | null {
+  const tabId = linkedInId(url);
+  if (!tabId) return null;
+  return jobs.find((j) => j.link && /linkedin\.com/i.test(j.link) && linkedInId(j.link) === tabId) ?? null;
+}
+
+/** A company careers page embedding Greenhouse: ?gh_jid=123 is the job at …/jobs/123. */
+function greenhouseMatch<T extends JobLink>(tab: UrlParts, jobs: T[]): T | null {
+  const ghJid = tab.query.get("gh_jid");
+  if (!ghJid) return null;
+  return (
+    jobs.find((j) => {
+      const p = j.link ? urlParts(j.link) : null;
+      return p && (p.query.get("gh_jid") === ghJid || p.path.at(-1) === ghJid);
+    }) ?? null
+  );
+}
+
+/** Length of the shared path when one path starts with the whole of the other, else 0. */
+function sharedPrefix(a: string[], b: string[]): number {
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  return short.every((seg, i) => long[i] === seg) ? short.length : 0;
+}
+
+/**
+ * The application form lives under the listing (…/<id>/apply, …/<id>/application), or the
+ * saved link is the form and this is the listing. The shorter path needs two parts at least,
+ * so a bare /careers never matches every job on a site. The longest shared path wins.
+ */
+function pathPrefixMatch<T extends JobLink>(tab: UrlParts, jobs: T[]): T | null {
+  let best: { job: T; len: number } | null = null;
+  for (const j of jobs) {
+    const p = j.link ? urlParts(j.link) : null;
+    const len = p && p.host === tab.host ? sharedPrefix(p.path, tab.path) : 0;
+    if (len >= 2 && (!best || len > best.len)) best = { job: j, len };
+  }
+  return best?.job ?? null;
+}
+
+function otherSiteMatch<T extends JobLink>(url: string, jobs: T[]): T | null {
+  const tab = urlParts(url);
+  return tab ? (greenhouseMatch(tab, jobs) ?? pathPrefixMatch(tab, jobs)) : null;
+}
 
 /** Finds the saved job a browser tab belongs to, by its listing link. */
 export function matchJob<T extends JobLink>(url: string, jobs: T[]): T | null {
@@ -164,39 +250,9 @@ export function matchJob<T extends JobLink>(url: string, jobs: T[]): T | null {
   if (!key) return null;
   const exact = jobs.find((j) => j.link && linkKey(j.link) === key);
   if (exact) return exact;
-  // The same page with other query parameters, when the job is named by the path
-  // itself (not by ?id=…, which would mix up jobs sharing one page).
-  const page = pageKey(url);
-  const samePage = jobs.find((j) => j.link && !linkKey(j.link).includes("?") && pageKey(j.link) === page && page.split("/").length > 2);
+  const samePage = samePageMatch(url, jobs);
   if (samePage) return samePage;
-  // LinkedIn shows one posting under several URL shapes and country subdomains; the numeric id is stable.
-  if (/linkedin\.com/i.test(url)) {
-    const tabId = linkedInId(url);
-    return tabId ? (jobs.find((j) => j.link && /linkedin\.com/i.test(j.link) && linkedInId(j.link) === tabId) ?? null) : null;
-  }
-  const tab = urlParts(url);
-  if (!tab) return null;
-  // A company careers page embedding Greenhouse: ?gh_jid=123 is the job at …/jobs/123.
-  const ghJid = tab.query.get("gh_jid");
-  if (ghJid) {
-    const hit = jobs.find((j) => {
-      const p = j.link ? urlParts(j.link) : null;
-      return p && (p.query.get("gh_jid") === ghJid || p.path.at(-1) === ghJid);
-    });
-    if (hit) return hit;
-  }
-  // The application form lives under the listing (…/<id>/apply, …/<id>/application), or the
-  // saved link is the form and this is the listing. The shorter path needs two parts at least,
-  // so a bare /careers never matches every job on a site.
-  let best: { job: T; len: number } | null = null;
-  for (const j of jobs) {
-    const p = j.link ? urlParts(j.link) : null;
-    if (!p || p.host !== tab.host) continue;
-    const [short, long] = p.path.length <= tab.path.length ? [p.path, tab.path] : [tab.path, p.path];
-    if (short.length < 2 || !short.every((seg, i) => long[i] === seg)) continue;
-    if (!best || short.length > best.len) best = { job: j, len: short.length };
-  }
-  return best?.job ?? null;
+  return /linkedin\.com/i.test(url) ? linkedInMatch(url, jobs) : otherSiteMatch(url, jobs);
 }
 
 function urlParts(url: string) {

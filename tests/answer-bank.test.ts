@@ -3,12 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // In-memory settings state, so the learned record and AI chain run without a database.
 const state = new Map<string, unknown>();
 const settings = { current: null as unknown };
+// Keys whose next write fails, to test what happens when bookkeeping breaks.
+const failWrites = new Set<string>();
 vi.mock("@/lib/settings", async (orig) => {
   const real = await orig<typeof import("@/lib/settings")>();
   return {
     ...real,
     getState: async (k: string) => state.get(k) ?? null,
-    setState: async (k: string, v: unknown) => void state.set(k, structuredClone(v)),
+    setState: async (k: string, v: unknown) => {
+      if (failWrites.delete(k)) throw new Error("disk is full");
+      state.set(k, structuredClone(v));
+    },
     getSettings: async () => settings.current,
     getSecrets: async () => ({ ...real.emptySecrets, openaiKey: "sk-o", geminiKey: "g-k" }),
   };
@@ -30,7 +35,7 @@ const profile: Profile = {
   ...emptyProfile,
   name: "Alex Doe",
   email: "m@example.com",
-  phone: "+92 311 0000000",
+  phone: "+1 555 0102",
   location: "Islamabad, Pakistan",
   education: [{ school: "Example University", degree: "BS in Software Engineering", start: "2017", end: "May 2021" }],
   experience: [
@@ -53,8 +58,8 @@ const facts: ApplyFacts = {
   veteran: "No",
   disability: "No",
 };
-const usJob: BankJob = { company: "Appfire", role: "Software Engineer", location: "Remote, United States", mode: "Remote", source: "linkedin" };
-const pkJob: BankJob = { company: "Arbisoft", role: "Software Engineer", location: "Islamabad, Pakistan", mode: "Onsite", source: "indeed" };
+const usJob: BankJob = { company: "Acme Widgets", role: "Software Engineer", location: "Remote, United States", mode: "Remote", source: "linkedin" };
+const pkJob: BankJob = { company: "Globex", role: "Software Engineer", location: "Islamabad, Pakistan", mode: "Onsite", source: "indeed" };
 const now = new Date("2026-11-18T00:00:00Z");
 const ctx = (job: BankJob = usJob) => ({ profile, facts, job, now });
 const F = (label: string, type: FormField["type"] = "text", options?: string[]): FormField => ({ id: "f", label, type, ...(options ? { options } : {}) });
@@ -138,7 +143,7 @@ describe("learned answers", () => {
   const entries = [
     { question: "What is your expected salary?", answer: "500000", scope: "all" },
     { question: "Years of experience with React", answer: "4", scope: "all" },
-    { question: "Why do you want to work at Appfire?", answer: "Because…", scope: "job-1" },
+    { question: "Why do you want to work at Acme Widgets?", answer: "Because…", scope: "job-1" },
   ];
   it("matches the same question worded differently, and nothing else", () => {
     expect(findAnswer(F("Expected salary"), entries, "j")?.value).toBe("500000");
@@ -164,11 +169,11 @@ describe("learned answers", () => {
   });
 
   it("keeps job-specific answers to their job", () => {
-    const why = F("Why do you want to work at Appfire?", "textarea");
+    const why = F("Why do you want to work at Acme Widgets?", "textarea");
     expect(findAnswer(why, entries, "job-2")).toBeNull();
     expect(findAnswer(why, entries, "job-1")?.value).toBe("Because…");
-    expect(isJobSpecific(why, "Appfire")).toBe(true);
-    expect(isJobSpecific(F("Describe a project you are proud of", "textarea"), "Appfire")).toBe(false);
+    expect(isJobSpecific(why, "Acme Widgets")).toBe(true);
+    expect(isJobSpecific(F("Describe a project you are proud of", "textarea"), "Acme Widgets")).toBe(false);
   });
   it("trims open answers at a full sentence", () => {
     expect(trimToSentences("One two three. Four five six. Seven eight.", 6)).toBe("One two three. Four five six.");
@@ -178,7 +183,7 @@ describe("learned answers", () => {
 
 describe("resolveAnswers", () => {
   beforeEach(() => state.clear());
-  const job = { ...pkJob, id: "job-1", company: "Arbisoft", role: "Software Engineer" };
+  const job = { ...pkJob, id: "job-1", company: "Globex", role: "Software Engineer" };
 
   it("makes no AI call when the bank covers every field", async () => {
     const ai = vi.fn();
@@ -220,16 +225,16 @@ describe("resolveAnswers", () => {
   it("spends AI only on required questions when the form marks any", async () => {
     const req = { ...F("Describe a hard bug you fixed", "textarea"), id: "a", required: true };
     const opt = { ...F("Anything else you want us to know?", "textarea"), id: "b" };
-    const ai = vi.fn(async (_p: unknown, _j: unknown, _s: unknown, asked: FormField[]) => new Map(asked.map((f) => [f.id, "I traced a memory leak in a Node.js worker and fixed it."])));
+    const ai = vi.fn(async ({ fields: asked }: { fields: FormField[] }) => new Map(asked.map((f) => [f.id, "I traced a memory leak in a Node.js worker and fixed it."])));
     const deps = { answerFormFields: ai, estimateMarketSalary: vi.fn() };
     const { answers } = await resolveAnswers({ profile, facts, saved: [], job, fields: [req, opt] }, deps);
-    expect(ai.mock.calls[0][3].map((f: FormField) => f.id)).toEqual(["a"]);
+    expect(ai.mock.calls[0][0].fields.map((f: FormField) => f.id)).toEqual(["a"]);
     expect(answers.map((x) => x.source)).toEqual(["ai", "none"]);
 
     // Nothing marked required: every open question is answered.
     const plain = { ...F("What is your favourite framework and why?", "textarea"), id: "c" };
     await resolveAnswers({ profile, facts, saved: [], job, fields: [plain] }, deps);
-    expect(ai.mock.calls[1][3].map((f: FormField) => f.id)).toEqual(["c"]);
+    expect(ai.mock.calls[1][0].fields.map((f: FormField) => f.id)).toEqual(["c"]);
   });
 
   it("suggests from what is known without calling the AI (ai: false)", async () => {
@@ -243,7 +248,7 @@ describe("resolveAnswers", () => {
   });
 
   it("asks the AI about an optional field when told to (Ask AI)", async () => {
-    const ai = vi.fn(async (_p: unknown, _j: unknown, _s: unknown, asked: FormField[]) => new Map(asked.map((f) => [f.id, "Yes, happy to."])));
+    const ai = vi.fn(async ({ fields: asked }: { fields: FormField[] }) => new Map(asked.map((f) => [f.id, "Yes, happy to."])));
     const fields = [{ ...F("Anything else you want us to know?"), id: "o" }, { ...F("City"), id: "c", required: true }];
     const { answers } = await resolveAnswers({ profile, facts, saved: [], job, fields, forceAi: true }, { answerFormFields: ai, estimateMarketSalary: vi.fn() });
     expect(answers[0]).toMatchObject({ source: "ai", value: "Yes, happy to." });
@@ -259,7 +264,7 @@ describe("resolveAnswers", () => {
   });
 
   it("works out a market salary once per role and place", async () => {
-    const usJobFull = { ...usJob, id: "job-3", company: "Appfire", role: "Software Engineer" };
+    const usJobFull = { ...usJob, id: "job-3", company: "Acme Widgets", role: "Software Engineer" };
     const estimate = vi.fn(async () => 70_000);
     const deps = { answerFormFields: vi.fn(), estimateMarketSalary: estimate };
     const f = { ...F("Expected salary (USD per year)", "number"), id: "s" };
@@ -268,6 +273,29 @@ describe("resolveAnswers", () => {
     const second = await resolveAnswers({ profile, facts, saved: [], job: { ...usJobFull, id: "job-4" }, fields: [f] }, deps);
     expect(second.answers[0].source).toBe("learned");
     expect(estimate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("answers built from your own facts", () => {
+  const withFacts = (over: Partial<ApplyFacts>, f: FormField) => bankAnswer(f, { profile, facts: { ...facts, ...over }, job: usJob, now });
+
+  it("picks your time zone by its offset, not a hard-coded one", () => {
+    const zones = ["(UTC+05:00) Islamabad, Karachi", "(UTC-05:00) Eastern Time (US & Canada)", "(UTC+05:30) Chennai, Mumbai"];
+    expect(withFacts({ timezone: "America/New_York" }, F("Time zone", "select", zones))?.value).toBe("(UTC-05:00) Eastern Time (US & Canada)");
+    expect(withFacts({ timezone: "PKT (UTC+5)" }, F("Time zone", "select", [zones[2], zones[0]]))?.value).toBe("(UTC+05:00) Islamabad, Karachi");
+    expect(withFacts({ timezone: "IST (UTC+05:30)" }, F("Time zone", "select", zones))?.value).toBe("(UTC+05:30) Chennai, Mumbai");
+    expect(withFacts({ timezone: "Asia/Karachi" }, F("Time zone", "select", ["Karachi time", "Lisbon time"]))?.value).toBe("Karachi time");
+  });
+
+  it("does not guess a time zone you have not set", () => {
+    expect(withFacts({ timezone: "" }, F("Time zone", "select", ["(UTC+05:00) Islamabad, Karachi", "(UTC+00:00) London"]))?.value ?? null).toBeNull();
+  });
+
+  it("treats your city, region and country as plain text, not patterns", () => {
+    expect(withFacts({ city: "St. Mary (East)" }, F("City", "select", ["StX Mary East", "St. Mary (East)"]))?.value).toBe("St. Mary (East)");
+    expect(() => withFacts({ region: "New (South" }, F("State", "select", ["New (South Province", "North"]))).not.toThrow();
+    expect(() => withFacts({ country: "C++land", nationality: "C++lander" }, F("Nationality", "select", ["C++lander", "Other"]))).not.toThrow();
+    expect(() => withFacts({ english: "Fluent (C1" }, F("English level", "select", ["Fluent (C1)", "Basic"]))).not.toThrow();
   });
 });
 
@@ -303,5 +331,18 @@ describe("AI chain", () => {
     // The next call skips OpenAI without asking it.
     await p.complete("hi", { tier: "score" });
     expect(calls.filter((u) => u.includes("openai.com"))).toHaveLength(1);
+  });
+
+  it("keeps a good answer, and the AI that gave it, when counting the call fails", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      calls.push(url);
+      return reply(200, { choices: [{ message: { content: "ready" } }], usage: { prompt_tokens: 30, completion_tokens: 2 } });
+    }));
+    failWrites.add("aiUsage");
+    expect(await chainProvider().complete("hi", { tier: "score" })).toBe("ready");
+    // Only the first AI was asked, and it was not set aside.
+    expect(calls).toHaveLength(1);
+    expect(await getParked()).toEqual({});
   });
 });

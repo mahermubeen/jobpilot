@@ -5,12 +5,12 @@ import { emptyProfile, type Profile } from "@/lib/cv/types";
 
 const profile: Profile = {
   ...emptyProfile,
-  name: "Sara Khan Malik",
-  email: "sara@example.com",
-  phone: "+92 300 1234567",
+  name: "Avery Jo Example",
+  email: "avery@example.com",
+  phone: "+1 555 0103",
   links: [
-    { label: "LinkedIn", url: "https://linkedin.com/in/sara" },
-    { label: "GitHub", url: "https://github.com/sara" },
+    { label: "LinkedIn", url: "https://linkedin.com/in/avery" },
+    { label: "GitHub", url: "https://github.com/avery" },
   ],
 };
 const field = (over: Partial<FormField>): FormField => ({ id: "f1", label: "", type: "text", ...over });
@@ -34,13 +34,13 @@ describe("parseFields", () => {
 
 describe("profileAnswer", () => {
   it("answers contact details from the profile", () => {
-    expect(profileAnswer(field({ label: "First name" }), profile)).toBe("Sara");
-    expect(profileAnswer(field({ label: "Last name" }), profile)).toBe("Khan Malik");
-    expect(profileAnswer(field({ label: "Full name" }), profile)).toBe("Sara Khan Malik");
-    expect(profileAnswer(field({ label: "Email address", type: "email" }), profile)).toBe("sara@example.com");
-    expect(profileAnswer(field({ label: "Mobile phone number" }), profile)).toBe("+92 300 1234567");
-    expect(profileAnswer(field({ label: "LinkedIn profile URL" }), profile)).toBe("https://linkedin.com/in/sara");
-    expect(profileAnswer(field({ label: "GitHub" }), profile)).toBe("https://github.com/sara");
+    expect(profileAnswer(field({ label: "First name" }), profile)).toBe("Avery");
+    expect(profileAnswer(field({ label: "Last name" }), profile)).toBe("Jo Example");
+    expect(profileAnswer(field({ label: "Full name" }), profile)).toBe("Avery Jo Example");
+    expect(profileAnswer(field({ label: "Email address", type: "email" }), profile)).toBe("avery@example.com");
+    expect(profileAnswer(field({ label: "Mobile phone number" }), profile)).toBe("+1 555 0103");
+    expect(profileAnswer(field({ label: "LinkedIn profile URL" }), profile)).toBe("https://linkedin.com/in/avery");
+    expect(profileAnswer(field({ label: "GitHub" }), profile)).toBe("https://github.com/avery");
   });
 
   it("leaves everything else to the AI step", () => {

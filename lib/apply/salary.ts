@@ -83,6 +83,57 @@ export type SalaryResult =
   | { needsMarket: true }
   | null;
 
+type SalaryKind = "expected" | "current";
+type Salary = ApplyFacts["salary"];
+/** The question, your salary facts, the job, and whether the job is in your home market. */
+type SalaryCase = { kind: SalaryKind; s: Salary; job: SalaryJob; home: boolean };
+
+const toUsd = (monthly: number, currency: string) => monthly * rate(currency);
+
+/**
+ * The amount to give, in US dollars a month: what you earn now for "current";
+ * otherwise the job's stated maximum, your target at home, or the market rate,
+ * never below your floor. `needsMarket` when the market rate is needed and unknown.
+ */
+function targetUsdMonth({ kind, s, job, home }: SalaryCase, marketUsdYear?: number | null): number | "needsMarket" | null {
+  if (kind === "current") return s.last > 0 ? toUsd(s.last, s.currency) : null;
+  const floor = toUsd(s.floor > 0 ? s.floor : 0, s.currency);
+  const stated = statedMaxUsdMonth(job);
+  if (stated) return Math.max(stated, floor);
+  if (home) return toUsd(s.target, s.currency);
+  return marketUsdYear && marketUsdYear > 0 ? Math.max(marketUsdYear / 12, floor) : "needsMarket";
+}
+
+/** The currency the field asks for. What you earn now is in your own currency; what you ask for follows the job. */
+function answerCurrency(field: FormField, options: string, { kind, s, job, home }: SalaryCase): string {
+  const named = currencyIn(field.label) ?? currencyIn(options) ?? (kind === "current" ? null : currencyIn(job.pay));
+  return named ?? (kind === "current" || home ? s.currency : "USD");
+}
+
+/** The period the field asks for: named in it, else a month in your own currency at home, else a year. */
+function answerPeriod(field: FormField, options: string, currency: string, { kind, s, home }: SalaryCase): Period {
+  const named = periodIn(field.label) ?? periodIn(options);
+  if (named) return named;
+  return currency === s.currency && (kind === "current" || home) ? "month" : "year";
+}
+
+function answerUnits(field: FormField, c: SalaryCase): { currency: string; period: Period } {
+  const options = field.options?.join(" ") ?? "";
+  const currency = answerCurrency(field, options, c);
+  return { currency, period: answerPeriod(field, options, currency, c) };
+}
+
+const PER: Record<Period, string> = { month: "per month", year: "per year", hour: "per hour" };
+
+/** The answer text: an option, bare digits, or "120,000 USD per year". */
+function salaryValue(field: FormField, usdMonth: number, currency: string, period: Period): string | null {
+  if (field.options?.length) return pickSalaryOption(field.options, usdMonth, currency, period);
+  const amount = round(fromUsdMonth(usdMonth, currency, period), period);
+  // A number field, or a label that already names the currency or period, wants just the number.
+  if (field.type === "number" || currencyIn(field.label) || periodIn(field.label)) return String(amount);
+  return `${amount.toLocaleString("en-US")} ${currency} ${PER[period]}`;
+}
+
 /**
  * Your salary answer for one field, by these rules:
  * the job states a range → its maximum, never below your floor;
@@ -90,58 +141,30 @@ export type SalaryResult =
  * any other job without a range → the market rate (from the AI), never below your floor.
  * The amount is given in the currency and period the field asks for.
  */
-export function resolveSalary(
-  field: FormField,
-  facts: ApplyFacts,
-  job: SalaryJob,
-  marketUsdYear?: number | null,
-): SalaryResult {
+export function resolveSalary(field: FormField, facts: ApplyFacts, job: SalaryJob, marketUsdYear?: number | null): SalaryResult {
   const kind = salaryQuestion(field.label);
   const s = facts.salary;
   if (!kind || !(s.target > 0) || !s.currency) return null;
-  const toUsd = (monthly: number) => monthly * rate(s.currency);
-  const floor = toUsd(s.floor > 0 ? s.floor : 0);
-  const home = isHomeJob(job, facts);
+  const c: SalaryCase = { kind, s, job, home: isHomeJob(job, facts) };
+  const usdMonth = targetUsdMonth(c, marketUsdYear);
+  if (usdMonth === "needsMarket") return { needsMarket: true };
+  if (usdMonth === null) return null;
+  const { currency, period } = answerUnits(field, c);
+  const value = salaryValue(field, usdMonth, currency, period);
+  return value ? { value, usdMonth } : null;
+}
 
-  let usdMonth: number;
-  if (kind === "current") {
-    if (!(s.last > 0)) return null;
-    usdMonth = toUsd(s.last);
-  } else {
-    const stated = statedMaxUsdMonth(job);
-    if (stated) usdMonth = Math.max(stated, floor);
-    else if (home) usdMonth = toUsd(s.target);
-    else if (marketUsdYear && marketUsdYear > 0) usdMonth = Math.max(marketUsdYear / 12, floor);
-    else return { needsMarket: true };
-  }
-
-  // What you earn now is in your own currency; what you ask for follows the job.
-  const mine = kind === "current" || home;
-  const currency =
-    currencyIn(field.label) ??
-    currencyIn(field.options?.join(" ")) ??
-    (kind === "current" ? null : currencyIn(job.pay)) ??
-    (mine ? s.currency : "USD");
-  const period = periodIn(field.label) ?? periodIn(field.options?.join(" ") ?? "") ?? (currency === s.currency && mine ? "month" : "year");
-  const amount = round(fromUsdMonth(usdMonth, currency, period), period);
-
-  if (field.options?.length) {
-    const picked = pickSalaryOption(field.options, usdMonth, currency, period);
-    return picked ? { value: picked, usdMonth } : null;
-  }
-  if (field.type === "number") return { value: String(amount), usdMonth };
-  // A label that already names the currency or period wants just the number.
-  if (currencyIn(field.label) || periodIn(field.label)) return { value: String(amount), usdMonth };
-  const per = period === "month" ? "per month" : period === "year" ? "per year" : "per hour";
-  return { value: `${amount.toLocaleString("en-US")} ${currency} ${per}`, usdMonth };
+/** A pay-range option read with the field's currency and period when it names none ("5000+" → 5000 and up). */
+function optionPay(option: string, currency: string, period: Period) {
+  const withUnits = `${currencyIn(option) ? "" : currency + " "}${option}${periodIn(option) ? "" : " per " + period}`;
+  return parsePay(withUnits.replace(/\+|and above|or more/gi, ` - ${Number.MAX_SAFE_INTEGER}`));
 }
 
 /** The pay-range option that holds the amount, or the nearest one. */
 function pickSalaryOption(options: string[], usdMonth: number, currency: string, period: Period): string | null {
   let best: { option: string; distance: number } | null = null;
   for (const option of options) {
-    const withUnits = `${currencyIn(option) ? "" : currency + " "}${option}${periodIn(option) ? "" : " per " + period}`;
-    const p = parsePay(withUnits.replace(/\+|and above|or more/gi, ` - ${Number.MAX_SAFE_INTEGER}`));
+    const p = optionPay(option, currency, period);
     if (p.kind !== "salary") continue;
     if (usdMonth >= p.minUsdMonth && usdMonth <= p.maxUsdMonth) return option;
     const distance = Math.min(Math.abs(usdMonth - p.minUsdMonth), Math.abs(usdMonth - p.maxUsdMonth));

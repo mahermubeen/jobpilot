@@ -1,4 +1,5 @@
-import { fetchText, stripHtml } from "@/lib/sources/net";
+import { stripHtml } from "@/lib/sources/net";
+import { fetchPublicText } from "@/lib/sources/safe-url";
 import { pickWebsite } from "@/lib/sources/contacts";
 
 /** Research older than this is read again. */
@@ -30,7 +31,8 @@ export type Research = {
 
 type Fetcher = (url: string) => Promise<string>;
 const defaultFetch: Fetcher = (url) =>
-  fetchText(url, { timeoutMs: TIMEOUT_MS, headers: { accept: "text/html,*/*" } });
+  // Links come from scraped job data, so only public hosts are fetched (no localhost, LAN or metadata IPs).
+  fetchPublicText(url, { timeoutMs: TIMEOUT_MS, headers: { accept: "text/html,*/*" } });
 
 /** Visible text of a page, minus nav and footer noise, cut to a size the prompt can carry. */
 export function pageText(html: string, max = PAGE_CHARS): string {
@@ -66,6 +68,59 @@ const fresh = (c: ResearchCompany, now: Date) =>
   !!c.researchedAt &&
   now.getTime() - new Date(c.researchedAt).getTime() < RESEARCH_MAX_AGE_DAYS * 86_400_000;
 
+/** Short job descriptions are topped up from the job page. */
+const THIN_DESCRIPTION = 800;
+const POST_CHARS = 3000;
+
+function companyFacts(company: ResearchCompany): string[] {
+  return [
+    company?.about && `About: ${company.about}`,
+    company?.industry && `Industry: ${company.industry}`,
+    company?.size && `Size: ${company.size}`,
+    company?.stack && `Tech stack: ${company.stack}`,
+  ].filter(Boolean) as string[];
+}
+
+/** Text of one page, or "" when it is missing, blocked or empty. */
+async function tryPage(fetch: Fetcher, url: string, max?: number): Promise<string> {
+  try {
+    return pageText(await fetch(url), max);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Reads the site's home and about-style pages until MAX_PAGES distinct ones
+ * have text. One page at a time on purpose: it stops as soon as there is
+ * enough, so a company site gets as few requests as possible.
+ */
+async function readSite(site: string, fetch: Fetcher): Promise<string> {
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  for (const path of PAGES) {
+    if (parts.length >= MAX_PAGES) break;
+    // eslint-disable-next-line no-await-in-loop -- sequential on purpose: stop at MAX_PAGES, fewest requests to the site
+    const text = await tryPage(fetch, `${site}${path}`);
+    // Many sites answer every path with the home page.
+    const key = text.slice(0, 200);
+    if (text.length < 40 || seen.has(key)) continue;
+    seen.add(key);
+    parts.push(`[${path || "/"}]\n${text}`);
+  }
+  return parts.join("\n\n");
+}
+
+const clip = (text: string) => (text.length > MAX_CHARS ? `${text.slice(0, MAX_CHARS - 1)}…` : text);
+
+/** Site text: the cached copy while fresh, else read now (and returned as `read` to cache). */
+async function siteResearch(job: ResearchJob, company: ResearchCompany, fetch: Fetcher, now: Date) {
+  if (fresh(company, now)) return { siteText: company!.research!, read: null };
+  const site = siteFor(job, company);
+  const text = site ? await readSite(site, fetch) : "";
+  return { siteText: text, read: text || null };
+}
+
 /**
  * What we know about the company for a cover letter: stored facts, its own site
  * (cached on the company) and, when the saved description is thin, the job post.
@@ -76,54 +131,18 @@ export async function researchCompany(
   company: ResearchCompany,
   { fetch = defaultFetch, now = new Date() }: { fetch?: Fetcher; now?: Date } = {},
 ): Promise<Research> {
-  const facts = [
-    company?.about && `About: ${company.about}`,
-    company?.industry && `Industry: ${company.industry}`,
-    company?.size && `Size: ${company.size}`,
-    company?.stack && `Tech stack: ${company.stack}`,
-  ].filter(Boolean) as string[];
-
-  let siteText = "";
-  let read: string | null = null;
-  if (fresh(company, now)) {
-    siteText = company!.research!;
-  } else {
-    const site = siteFor(job, company);
-    if (site) {
-      const seen = new Set<string>();
-      const parts: string[] = [];
-      for (const path of PAGES) {
-        if (parts.length >= MAX_PAGES) break;
-        try {
-          const text = pageText(await fetch(`${site}${path}`));
-          // Many sites answer every path with the home page.
-          const key = text.slice(0, 200);
-          if (text.length < 40 || seen.has(key)) continue;
-          seen.add(key);
-          parts.push(`[${path || "/"}]\n${text}`);
-        } catch {
-          // Missing page or blocked; try the next.
-        }
-      }
-      if (parts.length) siteText = read = parts.join("\n\n");
-    }
-  }
-
-  let post = "";
-  if (job.link && (job.description ?? "").length < 800) {
-    try {
-      post = pageText(await fetch(job.link), 3000);
-    } catch {
-      // The saved description is all there is.
-    }
-  }
-
+  const wantsPost = !!job.link && (job.description ?? "").length < THIN_DESCRIPTION;
+  // The site and the job post are independent, so they are read at the same time.
+  const [{ siteText, read }, post] = await Promise.all([
+    siteResearch(job, company, fetch, now),
+    wantsPost ? tryPage(fetch, job.link!, POST_CHARS) : Promise.resolve(""),
+  ]);
   const text = [
-    facts.join("\n"),
+    companyFacts(company).join("\n"),
     siteText && `From their website:\n${siteText}`,
     post && `From the job post page:\n${post}`,
   ]
     .filter(Boolean)
     .join("\n\n");
-  return { text: text.length > MAX_CHARS ? `${text.slice(0, MAX_CHARS - 1)}…` : text, fresh: read };
+  return { text: clip(text), fresh: read };
 }

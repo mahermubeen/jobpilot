@@ -1,4 +1,5 @@
 import { getState, setState } from "@/lib/settings";
+import { oneAtATime } from "@/lib/util";
 import { validateAnswer, type FieldValue, type FormField } from "./answers";
 
 /**
@@ -71,53 +72,39 @@ export function similarity(a: string, b: string): number {
 
 export const MATCH_THRESHOLD = 0.6;
 
+type Remembered = { question: string; answer: string | string[]; scope?: string };
+type Candidate<T> = { value: FieldValue; entry: T; score: number };
+
+const inScope = (entry: Remembered, jobId: string) => !entry.scope || entry.scope === "all" || entry.scope === jobId;
+
+/** Remembered answers similar enough to the field's question, in scope, and valid for the field, in saved order. */
+function candidates<T extends Remembered>(field: FormField, entries: T[], jobId: string): Candidate<T>[] {
+  const key = questionKey(field.label);
+  if (!key) return [];
+  return entries.flatMap((entry) => {
+    const answer = Array.isArray(entry.answer) ? entry.answer : String(entry.answer ?? "").trim();
+    if (!inScope(entry, jobId) || !answer.length) return [];
+    // Recomputed, so answers saved before a matching fix still match.
+    const score = similarity(key, questionKey(entry.question));
+    if (score < MATCH_THRESHOLD) return [];
+    const value = validateAnswer(field, answer);
+    return value === null ? [] : [{ value, entry, score }];
+  });
+}
+
 /**
  * The best remembered answer for a field: same or similar question, usable
  * for this field (a valid option, the right kind of value), in scope for this
- * job. Returns the cleaned value and the entry it came from.
+ * job. Returns the cleaned value and the entry it came from. Ties go to the one saved first.
  */
-export function findAnswer<T extends { question: string; answer: string | string[]; scope?: string }>(
-  field: FormField,
-  entries: T[],
-  jobId: string,
-): { value: FieldValue; entry: T } | null {
-  const key = questionKey(field.label);
-  if (!key) return null;
-  let best: { value: FieldValue; entry: T; score: number } | null = null;
-  for (const entry of entries) {
-    if (entry.scope && entry.scope !== "all" && entry.scope !== jobId) continue;
-    const answer = Array.isArray(entry.answer) ? entry.answer : String(entry.answer ?? "").trim();
-    if (!answer.length) continue;
-    // Recomputed, so answers saved before a matching fix still match.
-    const score = similarity(key, questionKey(entry.question));
-    if (score < MATCH_THRESHOLD || (best && score <= best.score)) continue;
-    const value = validateAnswer(field, answer);
-    if (value === null) continue;
-    best = { value, entry, score };
-  }
+export function findAnswer<T extends Remembered>(field: FormField, entries: T[], jobId: string): { value: FieldValue; entry: T } | null {
+  const best = candidates(field, entries, jobId).reduce<Candidate<T> | null>((b, c) => (!b || c.score > b.score ? c : b), null);
   return best ? { value: best.value, entry: best.entry } : null;
 }
 
 /** The best few remembered answers for a field, best first, each value once. */
-export function findAnswers<T extends { question: string; answer: string | string[]; scope?: string }>(
-  field: FormField,
-  entries: T[],
-  jobId: string,
-  limit = 3,
-): { value: FieldValue; entry: T }[] {
-  const key = questionKey(field.label);
-  if (!key) return [];
-  const hits: { value: FieldValue; entry: T; score: number }[] = [];
-  for (const entry of entries) {
-    if (entry.scope && entry.scope !== "all" && entry.scope !== jobId) continue;
-    const answer = Array.isArray(entry.answer) ? entry.answer : String(entry.answer ?? "").trim();
-    if (!answer.length) continue;
-    const score = similarity(key, questionKey(entry.question));
-    if (score < MATCH_THRESHOLD) continue;
-    const value = validateAnswer(field, answer);
-    if (value !== null) hits.push({ value, entry, score });
-  }
-  hits.sort((a, b) => b.score - a.score);
+export function findAnswers<T extends Remembered>(field: FormField, entries: T[], jobId: string, limit = 3): { value: FieldValue; entry: T }[] {
+  const hits = candidates(field, entries, jobId).sort((a, b) => b.score - a.score);
   const seen = new Set<string>();
   const out: { value: FieldValue; entry: T }[] = [];
   for (const h of hits) {
@@ -138,13 +125,8 @@ export function isJobSpecific(field: FormField, company: string): boolean {
   return /\b(this|our|the) (role|position|job|company|team|opportunity|product|mission)\b|why (do you want|are you|would you|us|join|apply|here)|interest(s|ed)? you|excite[sd]? you|attract(s|ed)? you|cover letter|fit for/.test(l);
 }
 
-let queue: Promise<unknown> = Promise.resolve();
 /** Runs read-modify-write steps one at a time, so two forms filling at once do not lose answers. */
-function serial<T>(fn: () => Promise<T>): Promise<T> {
-  const next = queue.then(fn, fn);
-  queue = next.catch(() => {});
-  return next;
-}
+const serial = oneAtATime();
 
 export async function getLearned(): Promise<LearnedAnswer[]> {
   return (await getState<LearnedAnswer[]>(KEY)) ?? [];
@@ -156,18 +138,24 @@ function prune(list: LearnedAnswer[], now: number): LearnedAnswer[] {
   return kept.length > MAX ? kept.sort((a, b) => b.at - a.at).slice(0, MAX) : kept;
 }
 
+/** Answers with the same slot replace each other. */
+const slot = (e: Pick<LearnedAnswer, "key" | "scope" | "type">) => `${e.key}\u0000${e.scope}\u0000${e.type}`;
+
 /** Saves new answers, replacing an older answer to the same question in the same scope. */
 export function learn(items: Omit<LearnedAnswer, "id" | "key" | "uses" | "at">[], now = Date.now()) {
   if (!items.length) return Promise.resolve();
   return serial(async () => {
     const list = await getLearned();
+    // Position of each saved answer by question, scope and type; the first one wins, as findIndex did.
+    const at = new Map<string, number>();
+    list.forEach((e, i) => { if (!at.has(slot(e))) at.set(slot(e), i); });
     for (const item of items) {
       const key = questionKey(item.question);
       if (!key) continue;
-      const i = list.findIndex((e) => e.key === key && e.scope === item.scope && e.type === item.type);
-      const entry: LearnedAnswer = { ...item, key, id: i >= 0 ? list[i].id : crypto.randomUUID(), uses: 0, at: now };
-      if (i >= 0) list[i] = entry;
-      else list.push(entry);
+      const i = at.get(slot({ ...item, key }));
+      const entry: LearnedAnswer = { ...item, key, id: i === undefined ? crypto.randomUUID() : list[i].id, uses: 0, at: now };
+      if (i === undefined) at.set(slot(entry), list.push(entry) - 1);
+      else list[i] = entry;
     }
     await setState(KEY, prune(list, now));
   });
