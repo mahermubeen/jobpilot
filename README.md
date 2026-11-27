@@ -11,6 +11,27 @@ Everything (jobs, contacts, keys, your CV) is stored in the `data/` folder of
 this project. Nothing is uploaded anywhere except the requests you trigger to
 your own Apify, Gmail, Claude and (optionally) Apollo accounts.
 
+![Jobs board: jobs scored Strong, Partial or Skip against your CV, from Found to Offer](docs/screenshots/jobs.png)
+
+<details>
+<summary><b>More screens</b>: Today, Leads, Outbox</summary>
+
+**Today**: what needs you now: drafts to review, strong fits, replies and follow-ups.
+
+![Today dashboard](docs/screenshots/today.png)
+
+**Leads**: companies ranked by fit, reachability and open roles.
+
+![Leads ranked by lead score](docs/screenshots/leads.png)
+
+**Outbox**: every email waits for your review; nothing is sent without a click.
+
+![Outbox with drafts waiting for review](docs/screenshots/outbox.png)
+
+</details>
+
+<sub>Screenshots use fictional demo data from `npm run seed:demo`.</sub>
+
 ## What it does
 
 | Screen | What you do there |
@@ -178,6 +199,7 @@ If you call UK numbers, check them against the TPS/CTPS register first.
 | `npm run typecheck` / `npm run lint` | Type and lint checks |
 | `npm run db:generate` | Create a migration after editing `lib/db/schema.ts` |
 | `npm run import:artifact -- <folder>` | Import jobs exported as one JSON file each |
+| `JOBPILOT_DATA_DIR=./demo-data npm run seed:demo` | Fill a new, empty data folder with fictional demo jobs, leads and drafts (then start the app with the same `JOBPILOT_DATA_DIR`) |
 | `npm run prune:jobs` | List saved jobs outside your pay and place filters (`-- --apply` deletes them) |
 
 ## Project layout

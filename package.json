@@ -11,7 +11,8 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "import:artifact": "tsx scripts/import-artifact.ts",
-    "prune:jobs": "tsx scripts/prune-jobs.ts"
+    "prune:jobs": "tsx scripts/prune-jobs.ts",
+    "seed:demo": "tsx scripts/seed-demo.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
