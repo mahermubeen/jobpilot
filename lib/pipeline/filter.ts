@@ -1,4 +1,5 @@
 import { minPayUsdMonth, parsePay, type MinPay } from "@/lib/pay";
+import { escapeRegExp } from "@/lib/util";
 
 export type JobFilter = {
   minPay: MinPay;
@@ -63,7 +64,7 @@ const CA_PROVINCES: Record<string, string> = {
 const PLACE_NAMES = [...COUNTRIES, ...Object.values(US_STATES), ...Object.values(CA_PROVINCES)]
   .filter((n) => n.length > 3)
   .sort((a, b) => b.length - a.length);
-const PLACE_RE = new RegExp(`\\b(${PLACE_NAMES.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`);
+const PLACE_RE = new RegExp(`\\b(${PLACE_NAMES.map(escapeRegExp).join("|")})\\b`);
 const REGION_RE = /\b(europe|european union|eu|emea|north america|latin america|latam|americas|nordics|dach)\b/;
 // Case-sensitive, so "join us" never reads as the United States.
 const ALIAS_RE = /(?:^|[^A-Za-z])(USA|US|U\.S\.A?\.?|UK|UAE)(?![A-Za-z])/;
@@ -77,6 +78,21 @@ export function homePlaces(filter: Pick<JobFilter, "homeCity" | "locations">): s
   return [...new Set([filter.homeCity, ...parts].map(plain).filter((p) => p.length > 1))];
 }
 
+/** "Austin, TX" or "Toronto, ON": the US state or Canadian province code, upper-cased. */
+function stateCode(t: string): string | null {
+  const code = t.match(CODE_RE)?.[1];
+  return code && (US_STATES[code] || CA_PROVINCES[code]) ? code.toUpperCase() : null;
+}
+
+/** A country, region, US state or Canadian province named in the text (or its "City, ST" code). */
+function namedPlace(text: string, t: string): string | null {
+  const alias = text.match(ALIAS_RE)?.[1];
+  if (alias) return alias;
+  const named = t.match(PLACE_RE)?.[1] ?? t.match(REGION_RE)?.[1];
+  if (named) return named;
+  return stateCode(t);
+}
+
 /**
  * The first place in `text` outside the user's home, or null. Text that also
  * names a home place ("Pakistan or UAE") counts as open to them.
@@ -84,14 +100,9 @@ export function homePlaces(filter: Pick<JobFilter, "homeCity" | "locations">): s
 export function foreignPlace(text: string, home: string[], { areas = false } = {}): string | null {
   const t = plain(text);
   if (!t || home.some((h) => t.includes(h))) return null;
-  const alias = text.match(ALIAS_RE)?.[1];
-  if (alias) return alias;
-  const named = t.match(PLACE_RE)?.[1] ?? t.match(REGION_RE)?.[1];
-  if (named) return named;
-  const code = t.match(CODE_RE)?.[1];
-  if (code && (US_STATES[code] || CA_PROVINCES[code])) return code.toUpperCase();
-  if (areas && /\barea\b/.test(t)) return text.trim();
-  return null;
+  const place = namedPlace(text, t);
+  if (place) return place;
+  return areas && /\barea\b/.test(t) ? text.trim() : null;
 }
 
 const OPEN_WORLDWIDE =
@@ -129,39 +140,54 @@ export function restrictedTo(description: string | null | undefined, home: strin
   return null;
 }
 
+type Check = (job: FilterableJob, filter: JobFilter, ctx: { places: string[] }) => string | null;
+
+const payCheck: Check = (job, filter) => {
+  const pay = parsePay(job.pay);
+  if (filter.dropUnpaid) {
+    if (/\b(volunteer|unpaid)\b/i.test(job.role) || pay.kind === "unpaid") return "Unpaid or volunteer";
+    if (pay.kind === "equity") return "Equity only";
+  }
+  const min = minPayUsdMonth(filter.minPay);
+  return min > 0 && pay.kind === "salary" && pay.maxUsdMonth < min ? `Pay below minimum (${job.pay})` : null;
+};
+
+// A remote job only helps if it hires where the user lives.
+const locationAbroadCheck: Check = (job, _filter, { places }) => {
+  const abroad = foreignPlace(job.location ?? "", places, { areas: true });
+  return abroad && !openWorldwide(job.description, places) ? `Only for candidates in ${abroad} (${job.location})` : null;
+};
+
+// A listing placed in the user's own country already hires there, whatever offices the text mentions.
+const descriptionRestrictionCheck: Check = (job, _filter, { places }) => {
+  if (places.some((p) => plain(job.location).includes(p))) return null;
+  const limited = restrictedTo(job.description, places);
+  return limited ? `Must be based in ${limited}` : null;
+};
+
+const mentionsRemote = (job: FilterableJob, location: string) =>
+  [job.mode, location, job.role, job.description].some((t) => saysRemote(t));
+
+const onsiteElsewhereCheck: Check = (job, filter) => {
+  const home = plain(filter.homeCity);
+  const location = plain(job.location);
+  if (!home || !location || location.includes(home) || COUNTRIES.has(location)) return null;
+  return mentionsRemote(job, location) ? null : `Not remote and not in ${filter.homeCity.trim()} (${job.location})`;
+};
+
+/** Run in order; the first reason found wins. */
+const CHECKS: Check[] = [payCheck, locationAbroadCheck, descriptionRestrictionCheck, onsiteElsewhereCheck];
+
 /**
  * Why a job falls outside the user's pay and place rules, or null when it is
  * fine. Listings that state no pay, no location or only a country pass: only
  * a stated fact can rule a job out.
  */
 export function rejectReason(job: FilterableJob, filter: JobFilter): string | null {
-  const pay = parsePay(job.pay);
-
-  if (filter.dropUnpaid) {
-    if (/\b(volunteer|unpaid)\b/i.test(job.role) || pay.kind === "unpaid") return "Unpaid or volunteer";
-    if (pay.kind === "equity") return "Equity only";
-  }
-
-  const min = minPayUsdMonth(filter.minPay);
-  if (min > 0 && pay.kind === "salary" && pay.maxUsdMonth < min) {
-    return `Pay below minimum (${job.pay})`;
-  }
-
-  // A remote job only helps if it hires where the user lives.
-  const places = homePlaces(filter);
-  const abroad = foreignPlace(job.location ?? "", places, { areas: true });
-  if (abroad && !openWorldwide(job.description, places)) return `Only for candidates in ${abroad} (${job.location})`;
-  // A listing placed in the user's own country already hires there, whatever offices the text mentions.
-  const listedAtHome = places.some((p) => plain(job.location).includes(p));
-  const limited = listedAtHome ? null : restrictedTo(job.description, places);
-  if (limited) return `Must be based in ${limited}`;
-
-  const home = plain(filter.homeCity);
-  const location = plain(job.location);
-  if (home && location && !location.includes(home) && !COUNTRIES.has(location)) {
-    const remote =
-      saysRemote(job.mode) || saysRemote(location) || saysRemote(job.role) || saysRemote(job.description);
-    if (!remote) return `Not remote and not in ${filter.homeCity.trim()} (${job.location})`;
+  const ctx = { places: homePlaces(filter) };
+  for (const check of CHECKS) {
+    const reason = check(job, filter, ctx);
+    if (reason) return reason;
   }
   return null;
 }

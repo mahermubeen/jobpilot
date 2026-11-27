@@ -54,6 +54,33 @@ export const roleKey = (company: string, role: string) => `${companyKey(company)
 /** Query parameters that only track where a click came from. */
 const TRACKING = /^(utm_.*|ref|refid|referrer|trk|trackingid|source|src|from|gh_src|lever-source|lever-origin|fbclid|gclid|mc_[a-z]+|_hs[a-z]+|hsa_.*|campaign|medium|origin|position|pagenum|currentjobid|eboost|lipi|refid)$/i;
 
+type ParsedLink = { host: string; path: string; params: URLSearchParams };
+
+/** Board-specific job ids, tried in order; each returns a key or null. */
+const ID_KEYS: ((l: ParsedLink) => string | null)[] = [
+  ({ host, path, params }) => {
+    if (!/(^|\.)linkedin\.com$/.test(host)) return null;
+    const id = path.match(/\/jobs\/view\/(?:[^/]*?-)?(\d{6,})$/)?.[1] ?? params.get("currentJobId");
+    return id ? `linkedin:${id}` : null;
+  },
+  ({ host, params }) => {
+    if (!/(^|\.)indeed\.[a-z.]+$/.test(host)) return null;
+    const jk = params.get("jk") ?? params.get("vjk");
+    return jk ? `indeed:${jk.toLowerCase()}` : null;
+  },
+  ({ host, path, params }) => {
+    const gh = params.get("gh_jid") ?? (/greenhouse\.io$/.test(host) ? path.match(/\/jobs\/(\d+)$/)?.[1] : null);
+    return gh ? `greenhouse:${gh}` : null;
+  },
+];
+
+/** The address without tracking parameters, the rest sorted so order does not matter. */
+function cleanAddress({ host, path, params }: ParsedLink): string {
+  const kept = [...params].filter(([k]) => !TRACKING.test(k)).sort(([a], [b]) => a.localeCompare(b));
+  const query = kept.length ? `?${new URLSearchParams(kept)}` : "";
+  return `${host}${path}${query}`.toLowerCase();
+}
+
 /**
  * One key per job posting, whatever link shape a board used: LinkedIn and
  * Indeed job ids, Greenhouse job ids, else the address without tracking
@@ -68,21 +95,12 @@ export function linkKey(link: string | null | undefined): string {
   } catch {
     return raw.split("#")[0].replace(/\/+$/, "").toLowerCase();
   }
-  const host = u.hostname.toLowerCase().replace(/^www\./, "");
-  const path = u.pathname.replace(/\/+$/, "");
-  if (/(^|\.)linkedin\.com$/.test(host)) {
-    const id = path.match(/\/jobs\/view\/(?:[^/]*?-)?(\d{6,})$/)?.[1] ?? u.searchParams.get("currentJobId");
-    if (id) return `linkedin:${id}`;
+  const parsed: ParsedLink = { host: u.hostname.toLowerCase().replace(/^www\./, ""), path: u.pathname.replace(/\/+$/, ""), params: u.searchParams };
+  for (const key of ID_KEYS) {
+    const id = key(parsed);
+    if (id) return id;
   }
-  if (/(^|\.)indeed\.[a-z.]+$/.test(host)) {
-    const jk = u.searchParams.get("jk") ?? u.searchParams.get("vjk");
-    if (jk) return `indeed:${jk.toLowerCase()}`;
-  }
-  const gh = u.searchParams.get("gh_jid") ?? (/greenhouse\.io$/.test(host) ? path.match(/\/jobs\/(\d+)$/)?.[1] : null);
-  if (gh) return `greenhouse:${gh}`;
-  const params = [...u.searchParams].filter(([k]) => !TRACKING.test(k)).sort(([a], [b]) => a.localeCompare(b));
-  const query = params.length ? `?${new URLSearchParams(params)}` : "";
-  return `${host}${path}${query}`.toLowerCase();
+  return cleanAddress(parsed);
 }
 
 /** A link without any query: for matching a browser tab to a saved job. */
@@ -110,21 +128,28 @@ export function jobKeys(j: { company: string; role: string; link?: string | null
 const filled = <T extends object>(o: T) =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => typeof v === "string" ? v.trim() : v != null)) as Partial<T>;
 
+/** Other sources a merged job was listed on, without the one it is kept under. */
+function otherSources(a: RawJob, b: RawJob): string[] | undefined {
+  const all = new Set([...(a.alsoOn ?? []), b.source, ...(b.alsoOn ?? [])]);
+  all.delete(a.source);
+  return all.size ? [...all] : undefined;
+}
+
+const longer = (a: string | undefined, b: string | undefined) => ((b?.length ?? 0) > (a?.length ?? 0) ? b : a);
+
+// Fields where the first copy wins and the second only fills a gap.
+const FILL_FIELDS = ["pay", "location", "mode", "posted", "applyUrl"] as const;
+
 /** One job seen on two sources: keeps the fuller details and notes where else it was listed. */
 export function mergeJobs(a: RawJob, b: RawJob): RawJob {
-  const alsoOn = [...new Set([...(a.alsoOn ?? []), ...(b.source !== a.source ? [b.source] : []), ...(b.alsoOn ?? [])])]
-    .filter((s) => s !== a.source);
+  const filledIn = Object.fromEntries(FILL_FIELDS.map((k) => [k, a[k] || b[k]])) as Pick<RawJob, (typeof FILL_FIELDS)[number]>;
   return {
     ...a,
-    description: (b.description?.length ?? 0) > (a.description?.length ?? 0) ? b.description : a.description,
-    pay: a.pay || b.pay,
-    location: a.location || b.location,
-    mode: a.mode || b.mode,
-    posted: a.posted || b.posted,
-    applyUrl: a.applyUrl || b.applyUrl,
+    ...filledIn,
+    description: longer(a.description, b.description) ?? a.description,
     company_: { ...filled(b.company_), ...filled(a.company_) },
     recruiter: a.recruiter ?? b.recruiter,
-    alsoOn: alsoOn.length ? alsoOn : undefined,
+    alsoOn: otherSources(a, b),
   };
 }
 
@@ -133,6 +158,15 @@ export function mergeJobs(a: RawJob, b: RawJob): RawJob {
  * or same company and role). Repeats inside the new batch are merged into the
  * first one. `blocked` holds extra keys to drop, e.g. from deleted jobs.
  */
+/** Where the first of these keys was already placed, if any (a job has only a few keys). */
+function firstSeen(keys: string[], at: Map<string, number>): number | undefined {
+  for (const k of keys) {
+    const i = at.get(k);
+    if (i !== undefined) return i;
+  }
+  return undefined;
+}
+
 export function dedupeJobs(incoming: RawJob[], existing: KnownJob[], blocked: Iterable<string> = []): RawJob[] {
   const known = new Set<string>(blocked);
   for (const j of existing) for (const k of jobKeys(j)) known.add(k);
@@ -142,7 +176,7 @@ export function dedupeJobs(incoming: RawJob[], existing: KnownJob[], blocked: It
   for (const j of incoming) {
     const keys = jobKeys(j);
     if (keys.some((k) => known.has(k))) continue;
-    const seen = keys.map((k) => at.get(k)).find((i) => i !== undefined);
+    const seen = firstSeen(keys, at);
     if (seen !== undefined) {
       fresh[seen] = mergeJobs(fresh[seen], j);
       for (const k of keys) at.set(k, seen);

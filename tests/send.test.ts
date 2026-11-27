@@ -3,7 +3,7 @@ import { checkSend, type SendFacts } from "@/lib/pipeline/send";
 
 const facts = (over: Partial<SendFacts> = {}): SendFacts => ({
   status: "approved",
-  to: "careers@acme.io",
+  to: "careers@acme.example",
   isFollowUp: false,
   sentToday: 0,
   dailyCap: 20,

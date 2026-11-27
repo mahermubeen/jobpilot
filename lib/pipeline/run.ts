@@ -47,67 +47,76 @@ export async function startRun(
   return { id, started: true };
 }
 
-async function execute(id: string, kind: RunKind, postedWithinDays: PostedWithin) {
-  const db = await getDb();
+type RunProgress = {
+  save: (step: string | null, extra?: Partial<typeof schema.runs.$inferInsert>) => Promise<unknown>;
+  log: (line: string) => void;
+  stats: Record<string, number>;
+};
+type RunInputs = {
+  settings: Awaited<ReturnType<typeof getSettings>>;
+  secrets: Awaited<ReturnType<typeof getSecrets>>;
+  profile: Awaited<ReturnType<typeof getProfile>>;
+  postedWithinDays: PostedWithin;
+};
+
+/** Search, save, score, look up companies and write drafts. Never sends anything. */
+async function findAndDraft({ save, log, stats }: RunProgress, { settings, secrets, profile, postedWithinDays }: RunInputs) {
+  if (!settings.search.titles.length || !settings.search.locations.length) {
+    throw new Error("Add at least one job title and one location in Settings.");
+  }
+  await save("Preparing job titles");
+  const searchSettings = await ensureTitleVariants(settings, profile, log);
+
+  await save("Searching job boards, career pages and hiring posts");
+  const raw = await findJobs(searchSettings, log, postedWithinDays, secrets);
+  stats.found = raw.length;
+  stats.sources = new Set(raw.map((j) => j.source)).size;
+
+  await save("Saving new jobs");
+  stats.new = await storeJobs(raw, settings.search, log);
+
+  await save("Scoring fit");
+  stats.scored = await scoreNewJobs(profile, settings, log);
+
+  await save("Looking up companies and contacts");
+  stats.companies = await enrichCompanies(await companiesToEnrich(settings.caps.enrichPerRun), log);
+
+  await save("Writing applications");
+  stats.drafted = await draftStrongJobs(profile, settings.caps.draftPerRun, log);
+}
+
+/** Reads Gmail for replies and drafts follow-ups (drafts only; the user sends them). */
+async function checkInbox({ save, log, stats }: RunProgress, { settings, profile }: RunInputs) {
+  await save("Checking Gmail for replies");
+  stats.replies = await checkReplies(log);
+  await save("Writing follow-ups");
+  stats.followUps = await draftFollowUps(profile, settings, log);
+}
+
+function runProgress(db: Awaited<ReturnType<typeof getDb>>, id: string): RunProgress & { lines: string[] } {
   const lines: string[] = [];
   const stats: Record<string, number> = {};
-
-  const save = (step: string | null, extra: Partial<typeof schema.runs.$inferInsert> = {}) =>
-    db
-      .update(schema.runs)
-      .set({ step, stats, log: lines.join("\n"), ...extra })
-      .where(eq(schema.runs.id, id));
+  const save: RunProgress["save"] = (step, extra = {}) =>
+    db.update(schema.runs).set({ step, stats, log: lines.join("\n"), ...extra }).where(eq(schema.runs.id, id));
   const log = (line: string) => {
     lines.push(line);
     void save(null).catch(() => {});
   };
+  return { save, log, stats, lines };
+}
 
+async function execute(id: string, kind: RunKind, postedWithinDays: PostedWithin) {
+  const progress = runProgress(await getDb(), id);
   try {
-    const [settings, secrets, profile] = await Promise.all([
-      getSettings(),
-      getSecrets(),
-      getProfile(),
-    ]);
+    const [settings, secrets, profile] = await Promise.all([getSettings(), getSecrets(), getProfile()]);
     if (!profileIsReady(profile)) throw new Error("Add your CV in Settings first.");
-
-    if (kind !== "inbox") {
-      if (!settings.search.titles.length || !settings.search.locations.length) {
-        throw new Error("Add at least one job title and one location in Settings.");
-      }
-
-      await save("Preparing job titles");
-      const searchSettings = await ensureTitleVariants(settings, profile, log);
-
-      await save("Searching job boards, career pages and hiring posts");
-      const raw = await findJobs(searchSettings, log, postedWithinDays, secrets);
-      stats.found = raw.length;
-      stats.sources = new Set(raw.map((j) => j.source)).size;
-
-      await save("Saving new jobs");
-      stats.new = await storeJobs(raw, settings.search, log);
-
-      await save("Scoring fit");
-      stats.scored = await scoreNewJobs(profile, settings, log);
-
-      await save("Looking up companies and contacts");
-      const ids = await companiesToEnrich(settings.caps.enrichPerRun);
-      stats.companies = await enrichCompanies(ids, log);
-
-      await save("Writing applications");
-      stats.drafted = await draftStrongJobs(profile, settings.caps.draftPerRun, log);
-    }
-
-    if (secrets.gmailUser && secrets.gmailAppPassword) {
-      await save("Checking Gmail for replies");
-      stats.replies = await checkReplies(log);
-      await save("Writing follow-ups");
-      stats.followUps = await draftFollowUps(profile, settings, log);
-    }
-
-    await save("Done", { status: "done", finishedAt: new Date() });
+    const inputs: RunInputs = { settings, secrets, profile, postedWithinDays };
+    if (kind !== "inbox") await findAndDraft(progress, inputs);
+    if (secrets.gmailUser && secrets.gmailAppPassword) await checkInbox(progress, inputs);
+    await progress.save("Done", { status: "done", finishedAt: new Date() });
   } catch (err) {
-    lines.push(`Stopped: ${errorMessage(err)}`);
-    await save("Stopped", { status: "failed", finishedAt: new Date() }).catch(() => {});
+    progress.lines.push(`Stopped: ${errorMessage(err)}`);
+    await progress.save("Stopped", { status: "failed", finishedAt: new Date() }).catch(() => {});
   } finally {
     if (kind === "daily") await setState("lastDailyRun", today()).catch(() => {});
   }
