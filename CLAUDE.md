@@ -33,3 +33,14 @@ npm run db:generate                           # after changing lib/db/schema.ts
 - Route handlers are wrapped in `route()` (`lib/api.ts`); errors are `{ error }` JSON via `HttpError`.
 - Model output is parsed and validated before use; never trust it as-is.
 - Small, conventional commits (`feat:`, `fix:`, `security:`, `test:`, `docs:`, `ci:`, `chore:`).
+
+<!-- BEGIN:ai-repo-kit -->
+## Claude Code specifics (ai-repo-kit)
+
+- `AGENTS.md` is the rulebook; follow its loop and definition of done.
+- A **Stop hook** (`.claude/hooks/verify.sh`) runs `scripts/check.sh --fast` whenever you end a turn with uncommitted changes. If it blocks you, fix the cause. Do not edit or disable the hook, `.claude/settings.json`, `scripts/check.sh` or `.checkrc` to get past it. If a failure is pre-existing and unrelated, tell the user plainly.
+- Before saying a feature is done, run `scripts/check.sh --full` and paste the summary block into your reply.
+- `/repo-audit` runs the full audit (gate + public-readiness + checklists) and writes `reports/audit-<date>.md`.
+- For a larger change, also run `/code-review` on the diff, and `/security-review` when it touches auth, input handling, file access, payments, secrets or AI tool use.
+- Keep personal, machine-only notes in `CLAUDE.local.md` (gitignored), never in this file.
+<!-- END:ai-repo-kit -->

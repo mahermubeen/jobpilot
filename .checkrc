@@ -1,0 +1,3 @@
+# Settings for scripts/check.sh (sourced as bash).
+# basic-ftp is pinned to a patched version through "overrides" in package.json.
+NPM_AUDIT_LEVEL=high

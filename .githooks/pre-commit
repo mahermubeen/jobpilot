@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# ai-repo-kit: managed file. Enabled with: git config core.hooksPath .githooks
+# 1. Secret scan of staged changes (always; never skip this).
+# 2. scripts/check.sh --fast (skip once with SKIP_CHECK=1 git commit ...).
+set -uo pipefail
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --pre-commit --staged --redact --no-banner --log-level error . || { echo "pre-commit: secrets found in staged changes. Commit blocked." >&2; exit 1; }
+else
+  if git diff --cached -U0 | grep -E '^\+' | grep -qE 'AKIA[0-9A-Z]{16}|sk-ant-[A-Za-z0-9_-]{20,}|sk-(proj-)?[A-Za-z0-9]{32,}|gh[pousr]_[A-Za-z0-9]{36}|xox[baprs]-|AIza[0-9A-Za-z_-]{35}|PRIVATE KEY-----'; then
+    echo "pre-commit: something that looks like a secret is staged. Commit blocked. (Install gitleaks for a proper scan.)" >&2; exit 1
+  fi
+fi
+if git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|/)\.env(\.[^/]*)?$' | grep -qvE '\.(example|sample|template)$'; then
+  echo "pre-commit: a .env file is staged. Commit blocked." >&2; exit 1
+fi
+[ "${SKIP_CHECK:-0}" = 1 ] && exit 0
+[ -x scripts/check.sh ] && exec scripts/check.sh --fast
+exit 0

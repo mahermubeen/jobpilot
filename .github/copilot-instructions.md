@@ -1,0 +1,1 @@
+Follow AGENTS.md at the repo root: its change loop, definition of done and "Never" list. Detailed rules are in docs/standards/. Run `scripts/check.sh` after every change and `scripts/check.sh --full` before calling work done; report the summary.

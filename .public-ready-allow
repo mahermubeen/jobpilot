@@ -1,0 +1,5 @@
+# Intentional, reviewed hits for scripts/public-ready.sh (one extended regex per line).
+# Security contact address, published on purpose.
+^SECURITY\.md:[0-9]+:.*@gmail\.com$
+# Placeholder text in the Gmail settings form.
+^components/settings/sections\.tsx:[0-9]+:you@gmail\.com$
