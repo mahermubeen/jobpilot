@@ -1,5 +1,7 @@
 # JobPilot
 
+[![CI](https://github.com/mahermubeen/jobpilot/actions/workflows/ci.yml/badge.svg)](https://github.com/mahermubeen/jobpilot/actions/workflows/ci.yml)
+
 A job search dashboard that runs on your own computer. It finds jobs on
 LinkedIn, Indeed and company career boards, finds the people behind them,
 writes the email and a CV tailored to each job, and sends from your Gmail after
@@ -226,6 +228,13 @@ tests/               unit tests
 - Reply detection matches on the sender's address. A reply from a different
   address at the same company is not picked up; move the card by hand.
 
+## Security
+
+The app binds to `127.0.0.1`, rejects API calls from other websites and
+foreign hosts (`proxy.ts`), and keeps every key and personal record in the
+gitignored `data/` folder. See [SECURITY.md](SECURITY.md) for the full list
+and known gaps.
+
 ## License
 
-Proprietary. See `LICENSE`.
+MIT. See `LICENSE`.

@@ -56,3 +56,12 @@ next-env.d.ts
 .claude/settings.local.json
 .vscode/
 .idea/
+CLAUDE.local.md
+*.log
+/reports/
+
+# python (scripts/jobspy_runner.py)
+__pycache__/
+*.pyc
+.venv/
+venv/
