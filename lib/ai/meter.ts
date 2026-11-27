@@ -14,7 +14,7 @@ export type AiCall = {
   ms: number;
 };
 
-type Slot = { model?: string; inTokens: number; outTokens: number; cachedTokens?: number };
+export type Slot = { model?: string; inTokens: number; outTokens: number; cachedTokens?: number };
 
 // The calls made while one piece of work runs (one "Fill this page"), and the
 // token counts a provider reports for the single call in progress.

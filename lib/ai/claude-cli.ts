@@ -4,6 +4,62 @@ import { noteTokens } from "./meter";
 import type { AiProvider } from "./provider";
 import { SYSTEM_PROMPT as SYSTEM } from "./system";
 
+const TIMEOUT_MS = 5 * 60_000;
+const NOT_INSTALLED =
+  "The `claude` command was not found. Install Claude Code and sign in, or switch to an Anthropic API key in Settings.";
+
+/** Plain, small completions: no tools, plugins, MCP servers, project settings or saved session. */
+const cliArgs = (model: string) => [
+  "-p",
+  "--output-format", "json",
+  "--model", model,
+  "--tools", "",
+  "--no-session-persistence",
+  "--strict-mcp-config",
+  "--setting-sources", "",
+  "--system-prompt", SYSTEM,
+];
+
+/** The reply from the CLI's JSON output; throws with the CLI's own words when it failed. */
+function readResult(out: string, err: string, code: number | null, model: string): string {
+  try {
+    const parsed = JSON.parse(out) as ClaudeCliResult;
+    if (parsed.is_error || typeof parsed.result !== "string") throw new Error(parsed.result || "Claude Code returned an error.");
+    const usage = claudeCliUsage(parsed);
+    noteTokens(usage.model || model, usage.inTokens, usage.outTokens);
+    return parsed.result;
+  } catch (e) {
+    const detail = (err || out).trim().slice(0, 400);
+    throw new Error(`Claude Code failed (exit ${code}). ${detail || (e as Error).message}`);
+  }
+}
+
+function runClaude(prompt: string, model: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn("claude", cliArgs(model), { cwd: os.tmpdir(), stdio: ["pipe", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("Claude Code took longer than 5 minutes and was stopped."));
+    }, TIMEOUT_MS);
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    child.on("error", (e: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      reject(e.code === "ENOENT" ? new Error(NOT_INSTALLED) : e);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      try {
+        resolve(readResult(out, err, code, model));
+      } catch (e) {
+        reject(e);
+      }
+    });
+    child.stdin.end(prompt);
+  });
+}
 
 /**
  * Uses the Claude Code command that is installed and signed in on this
@@ -13,64 +69,7 @@ import { SYSTEM_PROMPT as SYSTEM } from "./system";
 export function claudeCliProvider(models: { write: string; score: string }): AiProvider {
   return {
     name: "Claude Code (local)",
-    complete(prompt, { tier }) {
-      const model = tier === "score" ? models.score : models.write;
-      const args = [
-        "-p",
-        "--output-format", "json",
-        "--model", model,
-        "--tools", "",
-        "--no-session-persistence",
-        "--strict-mcp-config",
-        "--setting-sources", "",
-        "--system-prompt", SYSTEM,
-      ];
-      return new Promise<string>((resolve, reject) => {
-        const child = spawn("claude", args, {
-          cwd: os.tmpdir(),
-          stdio: ["pipe", "pipe", "pipe"],
-        });
-        let out = "";
-        let err = "";
-        const timer = setTimeout(() => {
-          child.kill("SIGKILL");
-          reject(new Error("Claude Code took longer than 5 minutes and was stopped."));
-        }, 5 * 60_000);
-
-        child.stdout.on("data", (d) => (out += d));
-        child.stderr.on("data", (d) => (err += d));
-        child.on("error", (e: NodeJS.ErrnoException) => {
-          clearTimeout(timer);
-          reject(
-            e.code === "ENOENT"
-              ? new Error(
-                  "The `claude` command was not found. Install Claude Code and sign in, or switch to an Anthropic API key in Settings.",
-                )
-              : e,
-          );
-        });
-        child.on("close", (code) => {
-          clearTimeout(timer);
-          try {
-            const parsed = JSON.parse(out) as ClaudeCliResult;
-            if (parsed.is_error || typeof parsed.result !== "string") {
-              throw new Error(parsed.result || "Claude Code returned an error.");
-            }
-            const usage = claudeCliUsage(parsed);
-            noteTokens(usage.model || model, usage.inTokens, usage.outTokens);
-            resolve(parsed.result);
-          } catch (e) {
-            const detail = (err || out).trim().slice(0, 400);
-            reject(
-              new Error(
-                `Claude Code failed (exit ${code}). ${detail || (e as Error).message}`,
-              ),
-            );
-          }
-        });
-        child.stdin.end(prompt);
-      });
-    },
+    complete: (prompt, { tier }) => runClaude(prompt, tier === "score" ? models.score : models.write),
   };
 }
 

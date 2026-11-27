@@ -28,19 +28,17 @@ function retryAfter(res: Response): number | null {
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null;
 }
 
-/** POSTs JSON to a local or hosted model server, with a five-minute limit and readable errors. */
-export async function postJson<T>(
-  url: string,
-  body: unknown,
-  opts: { label: string; headers?: Record<string, string>; unreachable: string },
-): Promise<T> {
-  let res: Response;
+type PostOptions = { label: string; headers?: Record<string, string>; unreachable: string };
+
+const TIMEOUT_MS = 5 * 60_000;
+
+async function send(url: string, body: unknown, opts: PostOptions): Promise<Response> {
   try {
-    res = await fetch(url, {
+    return await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...opts.headers },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(5 * 60_000),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (e) {
     if (e instanceof Error && e.name === "TimeoutError") {
@@ -48,21 +46,27 @@ export async function postJson<T>(
     }
     throw new AiUnreachableError(opts.unreachable);
   }
+}
+
+type ErrorBody = { error?: string | { message?: string } };
+
+/** The error message inside a JSON error body ({error}, {error:{message}} or a list of those), else the raw text. */
+function errorDetail(text: string): string {
+  try {
+    const j = JSON.parse(text) as ErrorBody | ErrorBody[];
+    const err = (Array.isArray(j) ? j[0] : j)?.error;
+    return typeof err === "string" ? err : (err?.message ?? text);
+  } catch {
+    return text;
+  }
+}
+
+/** POSTs JSON to a local or hosted model server, with a five-minute limit and readable errors. */
+export async function postJson<T>(url: string, body: unknown, opts: PostOptions): Promise<T> {
+  const res = await send(url, body, opts);
   const text = await res.text();
   if (!res.ok) {
-    let detail = text;
-    try {
-      const j = JSON.parse(text) as { error?: string | { message?: string } } | { error?: unknown }[];
-      const first = Array.isArray(j) ? j[0] : j;
-      const err = (first as { error?: string | { message?: string } }).error;
-      detail = typeof err === "string" ? err : err?.message ?? text;
-    } catch {}
-    throw new AiHttpError(
-      `${opts.label} answered ${res.status}: ${detail.trim().slice(0, 300)}`,
-      res.status,
-      text.slice(0, 2000),
-      retryAfter(res),
-    );
+    throw new AiHttpError(`${opts.label} answered ${res.status}: ${errorDetail(text).trim().slice(0, 300)}`, res.status, text.slice(0, 2000), retryAfter(res));
   }
   try {
     return JSON.parse(text) as T;

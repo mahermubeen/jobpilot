@@ -53,6 +53,26 @@ export function geminiCliProvider(models: { write: string; score: string }): AiP
   };
 }
 
+type GeminiModels = Record<string, { tokens?: { prompt?: number; candidates?: number; thoughts?: number } }>;
+type GeminiJson = { response?: unknown; error?: { message?: unknown } | unknown; stats?: { models?: GeminiModels } };
+
+const count = (v: unknown) => (typeof v === "number" ? v : 0);
+
+function geminiError(e: { message?: unknown } | undefined): string | undefined {
+  if (!e) return undefined;
+  return typeof e.message === "string" ? e.message : JSON.stringify(e);
+}
+
+/** The first model's name and the tokens across all models (thinking counts as output). */
+function geminiTokens(models: GeminiModels) {
+  const entries = Object.entries(models);
+  return {
+    model: entries[0]?.[0],
+    inTokens: entries.reduce((t, [, m]) => t + count(m.tokens?.prompt), 0),
+    outTokens: entries.reduce((t, [, m]) => t + count(m.tokens?.candidates) + count(m.tokens?.thoughts), 0),
+  };
+}
+
 /** Reads `{ response, error }` from `gemini --output-format json`, ignoring any log lines around it. */
 export function parseGeminiOutput(out: string): {
   response?: string;
@@ -65,23 +85,9 @@ export function parseGeminiOutput(out: string): {
   const end = out.lastIndexOf("}");
   if (start === -1 || end <= start) return {};
   try {
-    const json = JSON.parse(out.slice(start, end + 1)) as {
-      response?: unknown;
-      error?: { message?: unknown } | unknown;
-      stats?: { models?: Record<string, { tokens?: { prompt?: number; candidates?: number; thoughts?: number } }> };
-    };
+    const json = JSON.parse(out.slice(start, end + 1)) as GeminiJson;
     const response = typeof json.response === "string" && json.response.trim() ? json.response : undefined;
-    const e = json.error as { message?: unknown } | undefined;
-    const error = e ? (typeof e.message === "string" ? e.message : JSON.stringify(e)) : undefined;
-    const models = Object.entries(json.stats?.models ?? {});
-    const n = (v: unknown) => (typeof v === "number" ? v : 0);
-    return {
-      response,
-      error,
-      model: models[0]?.[0],
-      inTokens: models.reduce((t, [, m]) => t + n(m.tokens?.prompt), 0),
-      outTokens: models.reduce((t, [, m]) => t + n(m.tokens?.candidates) + n(m.tokens?.thoughts), 0),
-    };
+    return { response, error: geminiError(json.error as { message?: unknown } | undefined), ...geminiTokens(json.stats?.models ?? {}) };
   } catch {
     return {};
   }

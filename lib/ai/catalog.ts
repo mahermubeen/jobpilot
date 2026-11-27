@@ -141,27 +141,33 @@ export const AI_CATALOG: Record<AiKind, AiInfo> = {
   },
 };
 
+const ON_BY_DEFAULT = new Set<AiKind>(["openai", "gemini", "xai", "groq", "claude-cli"]);
+
 /** The order you asked for: other AIs first, Claude last. Unused ones stay off until set up. */
 export const DEFAULT_CHAIN: ChainEntry[] = (
   ["openai", "gemini", "xai", "groq", "claude-cli", "ollama", "anthropic", "gemini-cli", "custom"] as AiKind[]
 ).map((kind) => ({
   kind,
-  enabled: ["openai", "gemini", "xai", "groq", "claude-cli"].includes(kind),
+  enabled: ON_BY_DEFAULT.has(kind),
   write: AI_CATALOG[kind].write,
   score: AI_CATALOG[kind].score,
   ...(kind === "ollama" ? { baseUrl: AI_CATALOG.ollama.baseUrl } : {}),
   ...(kind === "custom" ? { baseUrl: "" } : {}),
 }));
 
+const DEFAULT_BY_KIND = new Map(DEFAULT_CHAIN.map((d) => [d.kind, d]));
+
 /** Keeps saved entries in their order, drops unknown ones, and appends any AI added since. */
 export function normaliseChain(saved: Partial<ChainEntry>[] | undefined): ChainEntry[] {
   const out: ChainEntry[] = [];
+  const used = new Set<AiKind>();
   for (const e of saved ?? []) {
-    if (!e?.kind || !(e.kind in AI_CATALOG) || out.some((o) => o.kind === e.kind)) continue;
-    const base = DEFAULT_CHAIN.find((d) => d.kind === e.kind)!;
+    const base = e?.kind ? DEFAULT_BY_KIND.get(e.kind) : undefined;
+    if (!base || used.has(base.kind)) continue;
+    used.add(base.kind);
     out.push({ ...base, ...e } as ChainEntry);
   }
-  for (const d of DEFAULT_CHAIN) if (!out.some((o) => o.kind === d.kind)) out.push({ ...d });
+  for (const d of DEFAULT_CHAIN) if (!used.has(d.kind)) out.push({ ...d });
   return out;
 }
 

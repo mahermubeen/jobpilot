@@ -3,10 +3,11 @@ import { anthropicProvider } from "./anthropic";
 import { AI_CATALOG, missingSetup, type AiKeyName, type AiKind, type ChainEntry } from "./catalog";
 import { claudeCliProvider } from "./claude-cli";
 import { geminiCliProvider } from "./gemini-cli";
-import { AiHttpError, AiUnreachableError } from "./http";
+import { AiHttpError } from "./http";
 import { ollamaProvider } from "./ollama";
 import { openAiCompatibleProvider } from "./openai-compatible";
-import { inCallSlot, recordCall } from "./meter";
+import { errorMessage } from "@/lib/util";
+import { inCallSlot, recordCall, type Slot } from "./meter";
 import type { AiProvider, CompleteOpts } from "./provider";
 
 /** Why an AI was set aside, and until when (null: until its key changes or you re-check it). */
@@ -51,20 +52,28 @@ export function providerFor(entry: ChainEntry, secrets: Secrets): AiProvider {
   }
 }
 
+const QUOTA = /insufficient_quota|quota|billing|credit|exceeded your current|usage limit|limit reached|resource_exhausted|spending/;
+const HOUR = 60 * MIN;
+
+/** How long to set an AI aside after an HTTP error, by status. */
+function classifyHttp(err: AiHttpError, quota: boolean, message: string, now: number): Parked {
+  const parked = (reason: Parked["reason"], until: number | null): Parked => ({ reason, message, until, at: now });
+  const { status } = err;
+  if (status === 401 || status === 403) return parked("auth", null);
+  if (status === 402 || (status === 429 && quota)) return parked("quota", now + 6 * HOUR);
+  if (status === 429) return parked("rate", now + Math.max(err.retryAfterMs ?? 0, 2 * MIN));
+  if (status === 404 || status === 400) return parked("down", now + 10 * MIN);
+  return parked("down", now + 2 * MIN);
+}
+
 /** Sorts a failure into: try again shortly, out of credits, bad key, or down. */
 export function classify(err: unknown, now = Date.now()): Parked {
   const message = err instanceof Error ? err.message : String(err);
   const text = (message + " " + (err instanceof AiHttpError ? err.body : "")).toLowerCase();
-  const quota = /insufficient_quota|quota|billing|credit|exceeded your current|usage limit|limit reached|resource_exhausted|spending/.test(text);
-  if (err instanceof AiHttpError) {
-    if (err.status === 401 || err.status === 403) return { reason: "auth", message, until: null, at: now };
-    if (err.status === 402 || (err.status === 429 && quota)) return { reason: "quota", message, until: now + 6 * 60 * MIN, at: now };
-    if (err.status === 429) return { reason: "rate", message, until: now + Math.max(err.retryAfterMs ?? 0, 2 * MIN), at: now };
-    if (err.status === 404 || err.status === 400) return { reason: "down", message, until: now + 10 * MIN, at: now };
-    return { reason: "down", message, until: now + 2 * MIN, at: now };
-  }
-  if (quota) return { reason: "quota", message, until: now + 6 * 60 * MIN, at: now };
-  if (err instanceof AiUnreachableError) return { reason: "down", message, until: now + 2 * MIN, at: now };
+  const quota = QUOTA.test(text);
+  if (err instanceof AiHttpError) return classifyHttp(err, quota, message, now);
+  if (quota) return { reason: "quota", message, until: now + 6 * HOUR, at: now };
+  // Unreachable servers and anything else: try again in two minutes.
   return { reason: "down", message, until: now + 2 * MIN, at: now };
 }
 
@@ -124,6 +133,44 @@ export async function chainStatus() {
   });
 }
 
+type Attempt = { ok: true; text: string } | { ok: false; failure: string };
+
+/** Meters and counts a finished call. A failure here is only logged: the answer is good and the AI is fine. */
+async function countSuccess(entry: ChainEntry, opts: CompleteOpts, slot: Slot, ms: number) {
+  const name = AI_CATALOG[entry.kind].name;
+  try {
+    recordCall({
+      ai: name,
+      model: slot.model || (opts.tier === "score" ? entry.score : entry.write),
+      tier: opts.tier,
+      purpose: opts.purpose ?? (opts.tier === "score" ? "quick task" : "writing"),
+      inTokens: slot.inTokens,
+      outTokens: slot.outTokens,
+      ...(slot.cachedTokens ? { cachedTokens: slot.cachedTokens } : {}),
+      ms,
+    });
+    await countCall(entry.kind, slot.inTokens, slot.outTokens);
+  } catch (err) {
+    console.error(`${name} answered, but its usage could not be counted: ${errorMessage(err)}`);
+  }
+}
+
+/** One call to one chain entry: metered and counted on success, parked on failure. */
+async function tryEntry(entry: ChainEntry, secrets: Secrets, prompt: string, opts: CompleteOpts): Promise<Attempt> {
+  const started = Date.now();
+  let done: { result: string; slot: Slot };
+  try {
+    done = await inCallSlot(() => providerFor(entry, secrets).complete(prompt, opts));
+  } catch (err) {
+    const p = classify(err);
+    await park(entry.kind, p);
+    return { ok: false, failure: `${AI_CATALOG[entry.kind].name}: ${p.message.slice(0, 160)}` };
+  }
+  // Only the provider's own failure parks it; bookkeeping after a good answer never does.
+  await countSuccess(entry, opts, done.slot, Date.now() - started);
+  return { ok: true, text: done.result };
+}
+
 /**
  * One provider that walks the chain: the first AI that is on, set up and not
  * parked gets the call. When it runs out of credits, hits a rate limit or
@@ -141,39 +188,23 @@ export function chainProvider(): AiProvider {
       const now = Date.now();
       const failures: string[] = [];
       let tried = 0;
-      for (const entry of ai.chain) {
-        if (!entry.enabled || missingSetup(entry, keys)) continue;
+      for (const entry of ai.chain.filter((e) => e.enabled && !missingSetup(e, keys))) {
         const name = AI_CATALOG[entry.kind].name;
         if (isParked(parked[entry.kind], now)) {
           failures.push(`${name}: set aside (${parked[entry.kind]!.reason})`);
           continue;
         }
         tried++;
-        try {
-          const started = Date.now();
-          const { result: text, slot } = await inCallSlot(() => providerFor(entry, secrets).complete(prompt, opts));
+        // A fallback chain: the next AI is only tried once this one has failed.
+        // eslint-disable-next-line no-await-in-loop -- fallback chain, each try depends on the one before failing
+        const attempt = await tryEntry(entry, secrets, prompt, opts);
+        if (attempt.ok) {
           lastName = name;
-          recordCall({
-            ai: name,
-            model: slot.model || (opts.tier === "score" ? entry.score : entry.write),
-            tier: opts.tier,
-            purpose: opts.purpose ?? (opts.tier === "score" ? "quick task" : "writing"),
-            inTokens: slot.inTokens,
-            outTokens: slot.outTokens,
-            ...(slot.cachedTokens ? { cachedTokens: slot.cachedTokens } : {}),
-            ms: Date.now() - started,
-          });
-          await countCall(entry.kind, slot.inTokens, slot.outTokens);
-          return text;
-        } catch (err) {
-          const p = classify(err);
-          await park(entry.kind, p);
-          failures.push(`${name}: ${p.message.slice(0, 160)}`);
+          return attempt.text;
         }
+        failures.push(attempt.failure);
       }
-      if (!tried && !failures.length) {
-        throw new Error("No AI is set up. Add at least one in Settings → AI.");
-      }
+      if (!tried && !failures.length) throw new Error("No AI is set up. Add at least one in Settings → AI.");
       throw new Error(`Every AI in the chain failed or is set aside. ${failures.join(" · ")}`);
     },
   };
