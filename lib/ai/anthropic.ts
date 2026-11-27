@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import type { BetaTextBlockParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { noteTokens } from "./meter";
 import type { AiProvider } from "./provider";
 import { SYSTEM_PROMPT as SYSTEM } from "./system";
@@ -10,6 +11,20 @@ const supportsFallbacks = (model: string) =>
 
 /** Haiku 4.5 rejects the effort setting; newer models default to thinking on. */
 const supportsEffort = (model: string) => !/^claude-haiku-4/.test(model);
+
+/**
+ * The user message. When the caller marks a stable start (`cacheUpTo`), that
+ * part goes in its own block with a cache breakpoint, so repeated calls (job
+ * scoring batches) read it from the prompt cache. Prefixes below the model's
+ * minimum length are simply not cached.
+ */
+export function userContent(prompt: string, cacheUpTo?: number): string | BetaTextBlockParam[] {
+  if (!cacheUpTo || !Number.isInteger(cacheUpTo) || cacheUpTo <= 0 || cacheUpTo >= prompt.length) return prompt;
+  return [
+    { type: "text", text: prompt.slice(0, cacheUpTo), cache_control: { type: "ephemeral" } },
+    { type: "text", text: prompt.slice(cacheUpTo) },
+  ];
+}
 
 function textOf(content: { type: string; text?: string }[]): string {
   return content
@@ -28,14 +43,14 @@ export function anthropicProvider(
 
   return {
     name: "Anthropic API",
-    async complete(prompt, { tier }) {
+    async complete(prompt, { tier, cacheUpTo }) {
       const model = tier === "score" ? models.score : models.write;
       try {
         const stream = client.beta.messages.stream({
           model,
           max_tokens: 16000,
           system: SYSTEM,
-          messages: [{ role: "user", content: prompt }],
+          messages: [{ role: "user", content: userContent(prompt, cacheUpTo) }],
           ...(supportsEffort(model)
             ? { output_config: { effort: tier === "score" ? "low" : "medium" } }
             : {}),
@@ -53,6 +68,7 @@ export function anthropicProvider(
           message.model || model,
           (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0),
           u.output_tokens,
+          u.cache_read_input_tokens,
         );
 
         if (message.stop_reason === "refusal") {

@@ -9,10 +9,12 @@ export type AiCall = {
   purpose: string;
   inTokens: number;
   outTokens: number;
+  /** Input tokens served from the provider's prompt cache (already counted in `inTokens`). */
+  cachedTokens?: number;
   ms: number;
 };
 
-type Slot = { model?: string; inTokens: number; outTokens: number };
+type Slot = { model?: string; inTokens: number; outTokens: number; cachedTokens?: number };
 
 // The calls made while one piece of work runs (one "Fill this page"), and the
 // token counts a provider reports for the single call in progress.
@@ -38,13 +40,15 @@ export async function inCallSlot<T>(fn: () => Promise<T>): Promise<{ result: T; 
   return { result, slot: s };
 }
 
-/** Providers call this with the usage their API returned. */
-export function noteTokens(model: string, inTokens: unknown, outTokens: unknown) {
+/** Providers call this with the usage their API returned. `cachedTokens` is part of `inTokens`. */
+export function noteTokens(model: string, inTokens: unknown, outTokens: unknown, cachedTokens?: unknown) {
   const s = slot.getStore();
   if (!s) return;
   s.model = model;
   s.inTokens += num(inTokens);
   s.outTokens += num(outTokens);
+  const cached = num(cachedTokens);
+  if (cached) s.cachedTokens = (s.cachedTokens ?? 0) + cached;
 }
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -55,5 +59,6 @@ export function sumCalls(calls: AiCall[]) {
     calls: calls.length,
     inTokens: calls.reduce((n, c) => n + c.inTokens, 0),
     outTokens: calls.reduce((n, c) => n + c.outTokens, 0),
+    cachedTokens: calls.reduce((n, c) => n + (c.cachedTokens ?? 0), 0),
   };
 }

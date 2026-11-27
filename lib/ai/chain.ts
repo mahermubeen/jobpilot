@@ -7,7 +7,7 @@ import { AiHttpError, AiUnreachableError } from "./http";
 import { ollamaProvider } from "./ollama";
 import { openAiCompatibleProvider } from "./openai-compatible";
 import { inCallSlot, recordCall } from "./meter";
-import type { AiProvider, AiTier } from "./provider";
+import type { AiProvider, CompleteOpts } from "./provider";
 
 /** Why an AI was set aside, and until when (null: until its key changes or you re-check it). */
 export type Parked = { reason: "rate" | "quota" | "auth" | "down"; message: string; until: number | null; at: number };
@@ -135,7 +135,7 @@ export function chainProvider(): AiProvider {
     get name() {
       return lastName;
     },
-    async complete(prompt: string, opts: { tier: AiTier; purpose?: string }) {
+    async complete(prompt: string, opts: CompleteOpts) {
       const [{ ai }, secrets, parked] = await Promise.all([getSettings(), getSecrets(), getParked()]);
       const keys = keyStatus(secrets);
       const now = Date.now();
@@ -160,6 +160,7 @@ export function chainProvider(): AiProvider {
             purpose: opts.purpose ?? (opts.tier === "score" ? "quick task" : "writing"),
             inTokens: slot.inTokens,
             outTokens: slot.outTokens,
+            ...(slot.cachedTokens ? { cachedTokens: slot.cachedTokens } : {}),
             ms: Date.now() - started,
           });
           await countCall(entry.kind, slot.inTokens, slot.outTokens);

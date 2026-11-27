@@ -86,7 +86,9 @@ export async function scoreJobs(
     .filter(Boolean)
     .join("\n");
 
-  const prompt = `You are screening job postings for one candidate. Judge each job only on the facts below.
+  // Everything that is the same for every batch comes first, so providers with
+  // prompt caching read it from the cache; only <jobs> changes between batches.
+  const stable = `You are screening job postings for one candidate. Judge each job only on the facts given.
 
 <candidate>
 ${profileText(profile)}
@@ -94,20 +96,23 @@ Looking for: ${targets.titles.join(", ") || "roles matching their experience"}
 Can work from: ${targets.locations.join("; ") || "their home location or remote"}
 </candidate>${rules ? `\n\n<hard_rules>\n${rules}\n</hard_rules>` : ""}
 
-<jobs>
-${list}
-</jobs>
-
 For each job decide:
 - "fit": "Strong" (the candidate meets most must-haves and can legally and practically do the job from where they are), "Partial" (a real stretch on stack, seniority or location, but worth a look), or "Skip" (wrong field, clearly location-locked somewhere they cannot work, unpaid, or a very different level).
 - "score": 0-100, how likely a recruiter is to shortlist this candidate.
 - "flags": up to 3 short warnings a candidate should know before applying, for example "US citizens only", "Asks 8+ yrs", "Equity only". Empty list if none.
 - "reason": one plain sentence naming the main match or mismatch.
 
+The jobs to screen:
+`;
+  const prompt = `${stable}
+<jobs>
+${list}
+</jobs>
+
 Reply with only a JSON array, one object per job, in the same order:
 [{"id": "...", "fit": "Strong", "score": 82, "flags": [], "reason": "..."}]`;
 
-  const raw = await completeJson<Partial<JobScore>[]>(prompt, "score");
+  const raw = await completeJson<Partial<JobScore>[]>(prompt, "score", undefined, stable.length);
   const byId = new Map((Array.isArray(raw) ? raw : []).map((r) => [String(r.id), r]));
   return jobs.flatMap((j) => {
     const r = byId.get(j.id);
