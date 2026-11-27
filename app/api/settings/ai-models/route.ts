@@ -1,8 +1,23 @@
 import { route, HttpError } from "@/lib/api";
-import { AI_CATALOG, type AiKind } from "@/lib/ai/catalog";
+import { AI_CATALOG, type AiKind, type ChainEntry } from "@/lib/ai/catalog";
 import { listOllamaModels } from "@/lib/ai/ollama";
 import { listOpenAiModels } from "@/lib/ai/openai-compatible";
-import { getSecrets, getSettings } from "@/lib/settings";
+import { getSecrets, getSettings, type Secrets } from "@/lib/settings";
+
+type Info = (typeof AI_CATALOG)[AiKind];
+
+/** Models from an OpenAI-style /models endpoint; the catalog's suggestions when it cannot be asked or fails. */
+async function listedModels(kind: AiKind, info: Info, entry: ChainEntry | undefined, secrets: Secrets): Promise<string[]> {
+  const base = kind === "custom" ? entry?.baseUrl : info.baseUrl;
+  const key = info.keyName ? secrets[info.keyName] : "";
+  if (!base || (info.keyName && kind !== "custom" && !key)) return info.suggestions;
+  try {
+    const models = await listOpenAiModels(base, key);
+    return models.length ? models : info.suggestions;
+  } catch {
+    return info.suggestions;
+  }
+}
 
 /** The models one AI offers, using its saved key. Fills the model dropdowns in Settings. */
 export const GET = route(async (req: Request) => {
@@ -13,13 +28,5 @@ export const GET = route(async (req: Request) => {
   const entry = ai.chain.find((e) => e.kind === kind);
   if (info.models === "fixed") return { models: info.suggestions };
   if (info.models === "ollama") return { models: (await listOllamaModels(entry?.baseUrl)) ?? [] };
-  const base = kind === "custom" ? entry?.baseUrl : info.baseUrl;
-  const key = info.keyName ? secrets[info.keyName] : "";
-  if (!base || (info.keyName && kind !== "custom" && !key)) return { models: info.suggestions };
-  try {
-    const models = await listOpenAiModels(base, key);
-    return { models: models.length ? models : info.suggestions };
-  } catch {
-    return { models: info.suggestions };
-  }
+  return { models: await listedModels(kind, info, entry, secrets) };
 });

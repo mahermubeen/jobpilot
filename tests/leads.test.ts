@@ -10,7 +10,7 @@ describe("leadScore", () => {
     const score = leadScore(
       {
         jobs: [{ fit: "Strong", status: "Found", found: "2026-10-12" }],
-        contacts: [{ email: "cto@acme.io", emailStatus: "verified", phone: "+1 415 555 0100", optedOut: false }],
+        contacts: [{ email: "cto@acme.example", emailStatus: "verified", phone: "+1 415 555 0100", optedOut: false }],
         companyPhone: null,
         openRoles: 3,
       },
@@ -24,7 +24,7 @@ describe("leadScore", () => {
       leadScore(
         {
           jobs: [{ fit: "Strong", status: "Found", found: "2026-10-12" }],
-          contacts: [{ email: "a@b.co", emailStatus: "verified", phone: null, optedOut: true }],
+          contacts: [{ email: "a@b.example", emailStatus: "verified", phone: null, optedOut: true }],
           companyPhone: null,
           openRoles: 1,
         },
@@ -43,10 +43,10 @@ describe("leadScore", () => {
 describe("rankEmails", () => {
   it("puts hiring inboxes first and drops junk and other domains", () => {
     const ranked = rankEmails(
-      ["info@acme.io", "Jane.Doe@acme.io", "careers@acme.io", "noreply@acme.io", "logo@2x.png", "ceo@other.com", "careers@acme.io"],
-      "acme.io",
+      ["info@acme.example", "Jane.Doe@acme.example", "careers@acme.example", "noreply@acme.example", "logo@2x.png", "ceo@other.example", "careers@acme.example"],
+      "acme.example",
     );
-    expect(ranked.map((r) => r.email)).toEqual(["careers@acme.io", "jane.doe@acme.io", "info@acme.io"]);
+    expect(ranked.map((r) => r.email)).toEqual(["careers@acme.example", "jane.doe@acme.example", "info@acme.example"]);
     expect(ranked.map((r) => r.kind)).toEqual(["hiring", "person", "generic"]);
   });
 });

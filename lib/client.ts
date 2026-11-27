@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+const WEEKEND = new Set(["Sat", "Sun"]);
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -92,7 +94,7 @@ export function timeInfo(tz: string | null | undefined) {
       new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hourCycle: "h23" }).format(now),
     );
     const day = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(now);
-    return { local, good: hour >= 10 && hour < 17 && !["Sat", "Sun"].includes(day) };
+    return { local, good: hour >= 10 && hour < 17 && !WEEKEND.has(day) };
   } catch {
     return null;
   }

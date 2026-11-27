@@ -17,34 +17,23 @@ const store = globalThis as unknown as { __jobpilotApplyTickets?: Map<string, Ti
 const tickets = (store.__jobpilotApplyTickets ??= new Map());
 const KEEP_MS = 10 * 60 * 1000;
 
-/** Starts answering the fields of one application-form page. Nothing is submitted. */
-export const POST = route(async (req: Request) => {
-  assertLocalCaller(req);
-  const body = (await req.json()) as { jobId?: string; page?: unknown; fields?: unknown; forceAi?: boolean };
-  const fields = parseFields(body.fields);
-  if (!fields.length) throw new HttpError(400, "No empty fields were found on this page.");
+type FillBody = { jobId?: string; page?: unknown; fields?: unknown; forceAi?: boolean };
 
-  // A saved job when there is one (it has the tailored CV and cover letter),
-  // otherwise the job as the page itself describes it.
+/**
+ * A saved job when there is one (it has the tailored CV and cover letter),
+ * otherwise the job as the page itself describes it.
+ */
+async function jobForFill(body: FillBody) {
   const db = await getDb();
   const [saved] = body.jobId ? await db.select().from(schema.jobs).where(eq(schema.jobs.id, body.jobId)) : [];
+  if (saved) return { ...saved, description: saved.description ?? saved.notes };
   const page = parsePageJob(body.page);
-  if (!saved && !page) throw new HttpError(400, body.jobId ? "Job not found." : "Pick a job first.");
-  const job = saved ? { ...saved, description: saved.description ?? saved.notes } : pageJob(page!);
-  const profile = await getProfile();
-  if (!profileIsReady(profile)) throw new HttpError(400, "Add your CV in JobPilot Settings first.");
-  const { applyAnswers, applyFacts } = await getSettings();
+  if (!page) throw new HttpError(400, body.jobId ? "Job not found." : "Pick a job first.");
+  return pageJob(page);
+}
 
-  const work = () =>
-    resolveAnswers({
-      profile,
-      facts: applyFacts,
-      saved: applyAnswers,
-      job,
-      fields,
-      forceAi: !!body.forceAi,
-    });
-
+/** Runs `work` in the background under a new ticket the extension polls. Old tickets are dropped. */
+function startTicket(work: () => Promise<{ answers: FieldAnswer[]; stats: FillStats }>): string {
   for (const [id, t] of tickets) if (Date.now() - t.at > KEEP_MS) tickets.delete(id);
   const ticket = uid();
   const entry: Ticket = { at: Date.now() };
@@ -52,6 +41,22 @@ export const POST = route(async (req: Request) => {
   void work().then(
     (r) => Object.assign(entry, r),
     (err) => (entry.error = errorMessage(err)),
+  );
+  return ticket;
+}
+
+/** Starts answering the fields of one application-form page. Nothing is submitted. */
+export const POST = route(async (req: Request) => {
+  assertLocalCaller(req);
+  const body = (await req.json()) as FillBody;
+  const fields = parseFields(body.fields);
+  if (!fields.length) throw new HttpError(400, "No empty fields were found on this page.");
+  const job = await jobForFill(body);
+  const profile = await getProfile();
+  if (!profileIsReady(profile)) throw new HttpError(400, "Add your CV in JobPilot Settings first.");
+  const { applyAnswers, applyFacts } = await getSettings();
+  const ticket = startTicket(() =>
+    resolveAnswers({ profile, facts: applyFacts, saved: applyAnswers, job, fields, forceAi: !!body.forceAi }),
   );
   return { ticket };
 });
