@@ -16,16 +16,16 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
-    "@electric-sql/pglite": "^0.5.9",
-    "@react-pdf/renderer": "^4.9.0",
+    "@electric-sql/pglite": "^0.6.0",
+    "@react-pdf/renderer": "^4.9.1",
     "apify-client": "^2.25.0",
     "drizzle-orm": "^0.45.4",
-    "imapflow": "^2.4.0",
+    "imapflow": "^2.12.2",
     "next": "16.4.6",
     "nodemailer": "^10.1.0",
     "postgres": "^3.4.9",
-    "react": "19.3.0",
-    "react-dom": "19.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "unpdf": "^1.8.1",
     "zod": "^4.6.7"
   },
@@ -42,7 +42,7 @@
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5",
-    "vitest": "^5.0.4"
+    "vitest": "^5.1.1"
   },
   "description": "Local-first job search: find jobs, find the people behind them, and apply with a tailored CV.",
   "engines": {
