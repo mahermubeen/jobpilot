@@ -13,13 +13,35 @@
   select, input[type="number"] { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; width: 100%; box-sizing: border-box; }
   .row { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-weight: 600; }
   button { margin-top: 14px; width: 100%; padding: 9px; font: inherit; font-weight: 700; color: #fff; background: var(--accent); border: 0; border-radius: 8px; cursor: pointer; }
+  button.secondary { margin-top: 6px; color: inherit; background: transparent; border: 1px solid var(--line); }
+  .learned { margin-top: 8px; padding: 8px 10px; border-radius: 8px; border: 1px solid #0d9488; background: rgba(13, 148, 136, .08); }
+  .learned.bad { border-color: #d92d20; background: rgba(217, 45, 32, .08); color: #d92d20; font-weight: 600; }
+  .learned a { display: inline-block; margin-top: 6px; color: var(--accent); font-weight: 600; }
+  .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; font-weight: 600; }
+  .switch { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .switch button { margin: 0; width: auto; padding: 5px 10px; border-radius: 0; font-size: 12px; font-weight: 600; color: inherit; background: transparent; }
+  .switch button[aria-checked="true"] { color: #fff; background: var(--accent); }
   button:disabled { opacity: .5; cursor: default; }
-  #status { margin-top: 10px; }
+  #status { margin-top: 10px; white-space: pre-line; }
   #status.bad { color: #d92d20; font-weight: 600; }
-  ul { margin: 10px 0 0; padding: 0; list-style: none; max-height: 220px; overflow: auto; }
-  li { padding: 3px 0 3px 14px; position: relative; overflow-wrap: anywhere; }
-  li::before { content: ""; position: absolute; left: 0; top: 9px; width: 8px; height: 8px; border-radius: 50%; background: #d97706; }
+  body { width: 400px; }
+  #report { max-height: 420px; overflow: auto; margin-top: 8px; }
+  .ai { margin-top: 4px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); }
+  .ai.used { border-color: #8b5cf6; background: rgba(139, 92, 246, .08); }
+  .ai.none { border-color: #1f9d63; background: rgba(31, 157, 99, .08); }
+  .ai .call { margin-top: 3px; font-size: 12px; color: var(--muted); }
+  h2 { margin: 12px 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  ul { margin: 0; padding: 0; list-style: none; }
+  li { padding: 4px 0 4px 14px; position: relative; overflow-wrap: anywhere; border-bottom: 1px solid var(--line); }
+  li::before { content: ""; position: absolute; left: 0; top: 10px; width: 8px; height: 8px; border-radius: 50%; background: #d97706; }
   li.filled::before { background: #1f9d63; }
+  li.skipped::before { background: #98a2b3; }
+  li .q { font-weight: 600; }
+  li .a { display: block; color: var(--muted); }
+  .tag { float: right; margin-left: 6px; padding: 0 6px; border-radius: 6px; font-size: 11px; font-weight: 700; background: var(--line); }
+  .tag.ai { background: #8b5cf6; color: #fff; }
+  .tag.learned { background: #2563eb; color: #fff; }
+  .tag.saved { background: #0d9488; color: #fff; }
   details { margin-top: 12px; color: var(--muted); }
   details label { margin-top: 6px; font-weight: 400; }
 </style>
@@ -31,12 +53,26 @@
     <select id="job"></select>
   </label>
   <div class="row"><input type="checkbox" id="cv" checked><label for="cv" style="margin:0;display:inline">Attach the tailored CV to résumé uploads</label></div>
+  <button id="addJob" class="secondary" hidden>Add this job to JobPilot</button>
   <button id="fill" disabled>Fill this page</button>
+  <button id="learn" class="secondary" hidden title="Also happens by itself when you press Submit, Next or Continue on the page">Save my answers to the record</button>
+  <div class="switch-row">
+    <span>Answer suggestions</span>
+    <div class="switch" role="radiogroup" aria-label="Answer suggestions">
+      <button id="modeOff" role="radio" title="Show nothing on any page">Off</button>
+      <button id="modePage" role="radio" title="Show suggestions on this tab until you leave the page">This page</button>
+      <button id="modeAll" role="radio" title="Show suggestions on every job application form">Everywhere</button>
+    </div>
+  </div>
+  <p id="watching" style="margin-top:6px;font-size:12px"></p>
   <p id="status">Connecting to JobPilot…</p>
-  <ul id="results"></ul>
+  <div id="report"></div>
   <details>
     <summary>Settings</summary>
+    <div class="row"><input type="checkbox" id="prefShowAll"><label for="prefShowAll" style="margin:0;display:inline;font-weight:400">Show suggestions as soon as fields appear (instead of when you click into one)</label></div>
+    <div class="row"><input type="checkbox" id="prefAuto"><label for="prefAuto" style="margin:0;display:inline;font-weight:400">Fill answers JobPilot already knows by themselves (AI stays click-only)</label></div>
     <label>JobPilot port <input type="number" id="port" min="1" max="65535"></label>
+    <button id="layout" class="secondary" title="Saves this form's layout (no typed values) to JobPilot's data/debug folder on this computer, so a page JobPilot misreads can be fixed">Send this form's layout to JobPilot</button>
   </details>
   <script src="popup.js"></script>
 </body>

@@ -35,6 +35,24 @@
   <label><input type="checkbox" name="terms"> I agree to the privacy policy</label>
   <label>Why do you want this job? <textarea name="why" maxlength="600"></textarea></label>
   <label>City <input name="city" role="combobox" aria-autocomplete="list"></label>
+  <!-- Lever's markup: the question sits in a div, each option's text in a span inside its label. -->
+  <div class="application-question">
+    <div class="application-label"><div class="text">How much production experience do you have with Expo / EAS?</div></div>
+    <ul data-qa="multiple-choice">
+      <li><label><input type="radio" name="expo" value="a"><span class="application-answer-alternative">Limited exposure — only personal projects</span></label></li>
+      <li><label><input type="radio" name="expo" value="b"><span class="application-answer-alternative">1–2 years in production apps</span></label></li>
+      <li><label><input type="radio" name="expo" value="c"><span class="application-answer-alternative">3+ years in production apps</span></label></li>
+    </ul>
+  </div>
+  <!-- LinkedIn Easy Apply's markup: the question in a span with a separate *, option text in a sibling label. -->
+  <div class="fb-dash-form-element">
+    <span class="fb-dash-form-element__label"><span aria-hidden="true">Please respond truthfully. How many years of hands-on experience do you have developing production applications using React Native?</span><span class="visually-hidden">Please respond truthfully. How many years of hands-on experience do you have developing production applications using React Native?</span></span><span class="fb-dash-form-element__required">*</span>
+    <div data-test-text-selectable-option="0"><input type="radio" name="rn" id="rn0" value="Less than 5 years"><label for="rn-label-0">Less than 5 years — I have limited hands-on experience.</label></div>
+    <div data-test-text-selectable-option="1"><input type="radio" name="rn" id="rn1" value="5-7 years"><label for="rn-label-1">5–7 years — I have solid experience.</label></div>
+    <div data-test-text-selectable-option="2"><input type="radio" name="rn" id="rn2" value="More than 7 years"><span>More than 7 years — I have extensive experience.</span></div>
+  </div>
+  <label>A question only you can answer ✱ <input name="mine"></label>
+  <label>Twitter URL (optional) <input name="twitter" type="url"></label>
   <label>Resume/CV <input type="file" name="resume" accept=".pdf,.doc,.docx"></label>
   <input type="hidden" name="token" value="x">
   <label>Password <input type="password" name="pw"></label>

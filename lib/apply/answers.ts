@@ -1,5 +1,5 @@
 import type { Profile } from "@/lib/cv/types";
-import { linkKey } from "@/lib/pipeline/dedupe";
+import { linkKey, pageKey } from "@/lib/pipeline/dedupe";
 
 /** One input found on an application form by the browser extension. */
 export type FormField = {
@@ -13,7 +13,16 @@ export type FormField = {
 };
 
 export type FieldValue = string | string[] | null;
-export type FieldAnswer = { id: string; value: FieldValue; source: "profile" | "ai" | "none" };
+export type AnswerSource = "profile" | "bank" | "saved" | "learned" | "ai" | "none";
+/** `skip`: the field is optional and best left empty (a referrer's name, say), so nothing is written and the AI is not asked. */
+export type FieldAnswer = {
+  id: string;
+  value: FieldValue;
+  source: AnswerSource;
+  skip?: boolean;
+  /** For answer-bank hits: which rule answered ("work-authorisation", "salary"). */
+  rule?: string;
+};
 export type SavedAnswer = { question: string; answer: string };
 
 const MAX_FIELDS = 60;
@@ -73,6 +82,41 @@ export function profileAnswer(field: FormField, profile: Profile): string | null
 }
 
 const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The option a wanted answer means: an exact match first, then an option that
+ * starts with it as a whole word ("Yes" → "Yes, I am authorised"), then the
+ * reverse ("Bachelor's degree in CS" → "Bachelor's degree").
+ */
+export function pickOption(options: string[], wanted: unknown): string | null {
+  const w = String(wanted ?? "").trim();
+  if (!w) return null;
+  const exact = options.find((o) => same(o, w));
+  if (exact) return exact;
+  const lw = w.toLowerCase();
+  const starts = options.find((o) => new RegExp(`^${escape(lw)}\\b`, "i").test(o.trim()));
+  if (starts) return starts;
+  return options.find((o) => o.trim().length > 1 && new RegExp(`^${escape(o.trim().toLowerCase())}\\b`).test(lw)) ?? null;
+}
+
+/** Open answers stay short: at most this many words, cut at a full sentence. */
+export const MAX_OPEN_WORDS = 60;
+
+/** Cuts text to the last whole sentence that fits both limits, or null if not even one does. */
+export function trimToSentences(text: string, maxWords: number, maxChars?: number): string | null {
+  const fits = (t: string) => t.split(/\s+/).filter(Boolean).length <= maxWords && (!maxChars || t.length <= maxChars);
+  if (fits(text)) return text;
+  const sentences = text.match(/[^.!?]+[.!?]+(\s|$)/g) ?? [];
+  let out = "";
+  for (const s of sentences) {
+    const next = (out + s).trim();
+    if (!fits(next)) break;
+    out = next + " ";
+  }
+  return out.trim() || null;
+}
+
 const BLANK = /^(leave blank|n\/?a|unknown|not (stated|available|sure)|null|none)?$/i;
 
 /**
@@ -80,16 +124,16 @@ const BLANK = /^(leave blank|n\/?a|unknown|not (stated|available|sure)|null|none
  * numbers must be numbers, and text respects the field's length limit.
  * Returns null when the field should be left for the user.
  */
-export function validateAnswer(field: FormField, value: unknown): FieldValue {
+export function validateAnswer(field: FormField, value: unknown, maxWords = MAX_OPEN_WORDS): FieldValue {
   if (field.type === "file") return null;
 
   if (field.options?.length) {
-    const pickOption = (v: unknown) => field.options!.find((o) => same(o, String(v ?? ""))) ?? null;
+    const pick = (v: unknown) => pickOption(field.options!, v);
     if (field.type === "checkbox") {
-      const picked = (Array.isArray(value) ? value : [value]).map(pickOption).filter((o): o is string => !!o);
+      const picked = (Array.isArray(value) ? value : [value]).map(pick).filter((o): o is string => !!o);
       return picked.length ? [...new Set(picked)] : null;
     }
-    return pickOption(Array.isArray(value) ? value[0] : value);
+    return pick(Array.isArray(value) ? value[0] : value);
   }
 
   if (Array.isArray(value) || value === null || value === undefined) return null;
@@ -104,10 +148,11 @@ export function validateAnswer(field: FormField, value: unknown): FieldValue {
   if (field.type === "date") return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
   if (field.type === "email") return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text) ? text : null;
   if (field.type === "url") return /^https?:\/\/\S+$/i.test(text) ? text : null;
-  if (field.maxLength && text.length > field.maxLength) {
+  if (field.type === "textarea") {
     // A cut-off sentence reads worse than an empty box the user fills in.
-    return field.type === "textarea" ? null : text.slice(0, field.maxLength);
+    return trimToSentences(text, maxWords, field.maxLength);
   }
+  if (field.maxLength && text.length > field.maxLength) return text.slice(0, field.maxLength);
   return text;
 }
 
@@ -119,12 +164,52 @@ export function matchJob<T extends JobLink>(url: string, jobs: T[]): T | null {
   if (!key) return null;
   const exact = jobs.find((j) => j.link && linkKey(j.link) === key);
   if (exact) return exact;
-  // LinkedIn shows one posting under several URL shapes; the numeric id is stable.
-  const tabId = /linkedin\.com/i.test(url) ? linkedInId(url) : null;
-  if (tabId) {
-    return jobs.find((j) => j.link && /linkedin\.com/i.test(j.link) && linkedInId(j.link) === tabId) ?? null;
+  // The same page with other query parameters, when the job is named by the path
+  // itself (not by ?id=…, which would mix up jobs sharing one page).
+  const page = pageKey(url);
+  const samePage = jobs.find((j) => j.link && !linkKey(j.link).includes("?") && pageKey(j.link) === page && page.split("/").length > 2);
+  if (samePage) return samePage;
+  // LinkedIn shows one posting under several URL shapes and country subdomains; the numeric id is stable.
+  if (/linkedin\.com/i.test(url)) {
+    const tabId = linkedInId(url);
+    return tabId ? (jobs.find((j) => j.link && /linkedin\.com/i.test(j.link) && linkedInId(j.link) === tabId) ?? null) : null;
   }
-  return null;
+  const tab = urlParts(url);
+  if (!tab) return null;
+  // A company careers page embedding Greenhouse: ?gh_jid=123 is the job at …/jobs/123.
+  const ghJid = tab.query.get("gh_jid");
+  if (ghJid) {
+    const hit = jobs.find((j) => {
+      const p = j.link ? urlParts(j.link) : null;
+      return p && (p.query.get("gh_jid") === ghJid || p.path.at(-1) === ghJid);
+    });
+    if (hit) return hit;
+  }
+  // The application form lives under the listing (…/<id>/apply, …/<id>/application), or the
+  // saved link is the form and this is the listing. The shorter path needs two parts at least,
+  // so a bare /careers never matches every job on a site.
+  let best: { job: T; len: number } | null = null;
+  for (const j of jobs) {
+    const p = j.link ? urlParts(j.link) : null;
+    if (!p || p.host !== tab.host) continue;
+    const [short, long] = p.path.length <= tab.path.length ? [p.path, tab.path] : [tab.path, p.path];
+    if (short.length < 2 || !short.every((seg, i) => long[i] === seg)) continue;
+    if (!best || short.length > best.len) best = { job: j, len: short.length };
+  }
+  return best?.job ?? null;
+}
+
+function urlParts(url: string) {
+  try {
+    const u = new URL(url);
+    return {
+      host: u.hostname.toLowerCase().replace(/^www\./, ""),
+      path: u.pathname.toLowerCase().split("/").filter(Boolean),
+      query: u.searchParams,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function linkedInId(url: string): string | null {
