@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { isLoopbackHost, isTrustedOrigin } from "@/lib/local-request";
+import { isForeignExtension, isLoopbackHost, isTrustedOrigin } from "@/lib/local-request";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -8,7 +8,8 @@ export function proxy(req: NextRequest) {
   if (!isLoopbackHost(req.headers.get("host"))) {
     return NextResponse.json({ error: "JobPilot only answers on localhost." }, { status: 403 });
   }
-  if (!SAFE_METHODS.has(req.method) && !isTrustedOrigin(req.headers.get("origin"))) {
+  const origin = req.headers.get("origin");
+  if (isForeignExtension(origin) || (!SAFE_METHODS.has(req.method) && !isTrustedOrigin(origin))) {
     return NextResponse.json(
       { error: "This endpoint only answers JobPilot and its browser extension." },
       { status: 403 },
