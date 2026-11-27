@@ -9,6 +9,15 @@ import {
 } from "drizzle-orm/pg-core";
 import type { CvVariant } from "@/lib/cv/types";
 
+/** The idea a cover letter is built on. buildPlan is for the user only, never sent. */
+export type Pitch = {
+  subject: string;
+  research: string;
+  problem: string;
+  approach: string;
+  buildPlan: string[];
+};
+
 const updatedAt = () =>
   timestamp("updated_at", { withTimezone: true }).notNull().defaultNow();
 const createdAt = () =>
@@ -24,12 +33,18 @@ export const jobs = pgTable("jobs", {
   score: integer("score"),
   source: text("source"),
   sourceId: text("source_id"),
+  /** "listing" for a job ad, "post" for a social post announcing a job. */
+  kind: text("kind").notNull().default("listing"),
+  /** Other sources that listed the same job when it was found. */
+  alsoOn: jsonb("also_on").$type<string[]>().notNull().default([]),
   pay: text("pay"),
   tier: text("tier"),
   mode: text("mode"),
   location: text("location"),
   description: text("description"),
   found: text("found"),
+  /** When the board says the job was posted, if it said. */
+  postedAt: timestamp("posted_at", { withTimezone: true }),
   applied: text("applied"),
   followUp: text("follow_up"),
   contact: text("contact"),
@@ -39,6 +54,8 @@ export const jobs = pgTable("jobs", {
   flags: jsonb("flags").$type<string[]>().notNull().default([]),
   companyId: text("company_id"),
   cvVariant: jsonb("cv_variant").$type<CvVariant | null>(),
+  /** The idea behind the cover letter: the problem, the build and how to demo it. */
+  pitch: jsonb("pitch").$type<Pitch | null>(),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -62,6 +79,9 @@ export const companies = pgTable("companies", {
     .notNull()
     .default([]),
   enrichedAt: timestamp("enriched_at", { withTimezone: true }),
+  /** Plain text read from the company's own site, for writing cover letters. */
+  research: text("research"),
+  researchedAt: timestamp("researched_at", { withTimezone: true }),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -130,6 +150,31 @@ export const runs = pgTable("runs", {
     .notNull()
     .defaultNow(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
+});
+
+/** Company job boards (Greenhouse, Lever, ...) that are checked directly every run. */
+export const atsBoards = pgTable("ats_boards", {
+  /** "greenhouse:stripe" */
+  id: text("id").primaryKey(),
+  ats: text("ats").notNull(),
+  slug: text("slug").notNull(),
+  company: text("company"),
+  checkedAt: timestamp("checked_at", { withTimezone: true }),
+  /** Failed checks in a row; boards that keep failing are skipped. */
+  failures: integer("failures").notNull().default(0),
+  createdAt: createdAt(),
+});
+
+/**
+ * Keys of jobs you deleted (board id, link, company + role), so a later search
+ * never adds them back. Only these keys are kept, not the job.
+ */
+export const dismissedJobs = pgTable("dismissed_jobs", {
+  /** "link:indeed:abc123", "role:acme|senior fullstack developer", "id:LinkedIn|123" */
+  key: text("key").primaryKey(),
+  company: text("company"),
+  role: text("role"),
+  createdAt: createdAt(),
 });
 
 /** One row per paid scraper run, so the monthly cap can be enforced locally. */

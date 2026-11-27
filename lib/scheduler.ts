@@ -1,5 +1,5 @@
 import { closeStaleRuns, startRun } from "@/lib/pipeline/run";
-import { getSecrets, getSettings, getState } from "@/lib/settings";
+import { getSettings, getState } from "@/lib/settings";
 import { today } from "@/lib/util";
 
 const g = globalThis as unknown as { __jobpilotScheduler?: boolean };
@@ -22,7 +22,6 @@ export function startScheduler() {
       const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
       if (hhmm < settings.schedule.time) return;
       if ((await getState<string>("lastDailyRun")) === today()) return;
-      if (!(await getSecrets()).apifyToken) return;
       await startRun("daily");
     } catch (err) {
       console.error("[jobpilot] scheduler:", err);

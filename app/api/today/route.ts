@@ -1,3 +1,4 @@
+import { missingSetup } from "@/lib/ai/catalog";
 import { route } from "@/lib/api";
 import { profileIsReady } from "@/lib/cv/types";
 import { getDb, schema } from "@/lib/db";
@@ -53,7 +54,7 @@ export const GET = route(async () => {
       search: settings.search.titles.length > 0 && settings.search.locations.length > 0,
       apify: secrets.apifyToken,
       gmail: !!secrets.gmailUser && secrets.gmailAppPassword,
-      ai: settings.ai.mode === "claude-cli" || secrets.anthropicKey,
+      ai: settings.ai.chain.some((e) => e.enabled && !missingSetup(e, secrets)),
     },
     name: profile.name,
     stats: {

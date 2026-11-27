@@ -2,6 +2,7 @@ import { desc, eq } from "drizzle-orm";
 import { profileIsReady } from "@/lib/cv/types";
 import { getDb, schema } from "@/lib/db";
 import { getProfile, getSecrets, getSettings, setState } from "@/lib/settings";
+import type { PostedWithin } from "@/lib/sources/posted";
 import { errorMessage, today, uid } from "@/lib/util";
 import {
   checkReplies,
@@ -13,6 +14,7 @@ import {
   scoreNewJobs,
   storeJobs,
 } from "./steps";
+import { ensureTitleVariants } from "./titles";
 
 export type RunKind = "find" | "daily" | "inbox";
 
@@ -25,22 +27,27 @@ export const currentRunId = () => g.__jobpilotRun ?? null;
  * Only one run at a time; progress is written to the `runs` table for the UI.
  *
  * find  - search, score, look up companies, write drafts, check replies
- * daily - same, but only jobs posted in the last day
+ * daily - same, always for jobs posted in the past 24 hours
  * inbox - only reply check and follow-up drafts (no scraping)
+ *
+ * `postedWithinDays` is how far back the search looks (past 24 hours by default).
  */
-export async function startRun(kind: RunKind): Promise<{ id: string; started: boolean }> {
+export async function startRun(
+  kind: RunKind,
+  postedWithinDays: PostedWithin = 1,
+): Promise<{ id: string; started: boolean }> {
   if (g.__jobpilotRun) return { id: g.__jobpilotRun, started: false };
   const id = uid();
   g.__jobpilotRun = id;
   const db = await getDb();
   await db.insert(schema.runs).values({ id, kind, step: "Starting" });
-  void execute(id, kind).finally(() => {
+  void execute(id, kind, kind === "daily" ? 1 : postedWithinDays).finally(() => {
     g.__jobpilotRun = null;
   });
   return { id, started: true };
 }
 
-async function execute(id: string, kind: RunKind) {
+async function execute(id: string, kind: RunKind, postedWithinDays: PostedWithin) {
   const db = await getDb();
   const lines: string[] = [];
   const stats: Record<string, number> = {};
@@ -64,14 +71,17 @@ async function execute(id: string, kind: RunKind) {
     if (!profileIsReady(profile)) throw new Error("Add your CV in Settings first.");
 
     if (kind !== "inbox") {
-      if (!secrets.apifyToken) throw new Error("Add your Apify token in Settings first.");
       if (!settings.search.titles.length || !settings.search.locations.length) {
         throw new Error("Add at least one job title and one location in Settings.");
       }
 
-      await save("Searching LinkedIn, Indeed and Google");
-      const raw = await findJobs(settings, log, kind === "daily");
+      await save("Preparing job titles");
+      const searchSettings = await ensureTitleVariants(settings, profile, log);
+
+      await save("Searching job boards, career pages and hiring posts");
+      const raw = await findJobs(searchSettings, log, postedWithinDays, secrets);
       stats.found = raw.length;
+      stats.sources = new Set(raw.map((j) => j.source)).size;
 
       await save("Saving new jobs");
       stats.new = await storeJobs(raw, settings.search, log);

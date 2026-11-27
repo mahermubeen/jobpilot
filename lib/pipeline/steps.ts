@@ -1,72 +1,240 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import { draftApplication, draftFollowUp, scoreJobs } from "@/lib/ai/tasks";
+import { draftApplication, draftFollowUp, scoreJobs, type OutreachDraft } from "@/lib/ai/tasks";
+import { researchCompany } from "@/lib/apply/research";
 import { profileIsReady, type Profile } from "@/lib/cv/types";
 import { getDb, schema } from "@/lib/db";
 import type { Company, Job } from "@/lib/db/schema";
 import { findReplies } from "@/lib/mail/imap";
 import { describeMinPay } from "@/lib/pay";
-import type { AppSettings } from "@/lib/settings";
+import type { AppSettings, Secrets, SearchLocation } from "@/lib/settings";
 import { apolloCompany, apolloPeople, hasApollo } from "@/lib/sources/apollo";
 import { BudgetError } from "@/lib/sources/apify";
 import { findWebsites, rankEmails, scrapeSites } from "@/lib/sources/contacts";
-import { searchGoogle, searchIndeed, searchLinkedIn } from "@/lib/sources/jobs";
+import { rememberBoards, searchCareerPages } from "@/lib/sources/ats";
+import {
+  searchArbeitnow,
+  searchHimalayas,
+  searchJobicy,
+  searchRemoteOk,
+  searchRemotive,
+  searchWeWorkRemotely,
+} from "@/lib/sources/feeds";
+import { type BoardKeys, searchAdzuna, searchJooble, searchReed } from "@/lib/sources/keyed";
+import {
+  type SearchInput,
+  searchCraigslist,
+  searchGlassdoor,
+  searchGoogle,
+  searchIndeed,
+  searchLinkedIn,
+  searchLinkedInPosts,
+  searchRedditApify,
+  searchWellfound,
+  searchXPosts,
+} from "@/lib/sources/jobs";
+import { JOBSPY_SITES, SITE_LABEL, searchJobSpy } from "@/lib/sources/jobspy";
+import { searchTitles } from "@/lib/sources/match";
+import { pool, type SourceContext } from "@/lib/sources/net";
+import { searchHackerNews, searchReddit } from "@/lib/sources/social";
+import { parsePosted, postedTooLongAgo, postedWithinLabel, type PostedWithin } from "@/lib/sources/posted";
 import type { RawJob, SiteContacts } from "@/lib/sources/types";
 import { chunk, daysBetween, domainOf, errorMessage, slug, today, uid } from "@/lib/util";
-import { companyId, dedupeJobs, jobId } from "./dedupe";
-import { rejectReason, type JobFilter } from "./filter";
+import { companyId, dedupeJobs, findDuplicates, jobId } from "./dedupe";
+import { dismissedKeys } from "./forget";
+import { homePlaces, rejectReason, type JobFilter } from "./filter";
 
 export type Log = (line: string) => void;
 
 // ---------- find ----------
 
-export async function findJobs(settings: AppSettings, log: Log, freshOnly: boolean): Promise<RawJob[]> {
+type SearchTask = {
+  label: string;
+  cost: "free" | "apify";
+  timeoutMs: number;
+  run: () => Promise<RawJob[]>;
+};
+
+const withTimeout = <T>(p: Promise<T>, ms: number, label: string) =>
+  Promise.race([
+    p,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} took longer than ${Math.round(ms / 60_000)} minutes; skipped.`)), ms),
+    ),
+  ]);
+
+/**
+ * Searches every source switched on in Settings, free ones and paid ones side
+ * by side, then the company career pages discovered along the way.
+ * A paid source hitting the Apify cap stops the other paid sources only.
+ */
+export async function findJobs(
+  settings: AppSettings,
+  log: Log,
+  postedWithinDays: PostedWithin,
+  keys: BoardKeys & Pick<Secrets, "apifyToken">,
+): Promise<RawJob[]> {
   const { search } = settings;
-  const postedWithinDays = freshOnly ? 1 : search.postedWithinDays;
+  const on = (key: string) => !!search.sources[key];
+  const titles = searchTitles(search);
+  const own = titles.filter((t) => search.titles.some((o) => o.trim() === t));
+  const extra = titles.filter((t) => !own.includes(t));
+  // Searches that cost time or money per title use your own titles, topped up
+  // with the first variants only while the list is short.
+  const boardTitles = [...own, ...extra].slice(0, Math.max(own.length, 8));
+  const apifyTitles = [...own, ...extra].slice(0, Math.max(own.length, 4));
+
+  log(`Looking for jobs posted in the ${postedWithinLabel(postedWithinDays)}`);
+  log(`Titles (${titles.length}): ${own.join(", ")}${extra.length ? ` + also ${extra.join(", ")}` : ""}`);
+
+  const ctx: SourceContext = {
+    titles,
+    boardTitles,
+    locations: search.locations,
+    postedWithinDays,
+    limit: search.maxPerFreeSearch,
+    apifyLimit: search.maxPerSearch,
+    excludeTitleWords: search.excludeTitleWords,
+    log,
+  };
   const found: RawJob[] = [];
   let budgetHit = false;
+  const MIN = 60_000;
+  const tasks: SearchTask[] = [];
 
-  const attempt = async (label: string, fn: () => Promise<RawJob[]>) => {
-    if (budgetHit) return;
+  // Free job boards, scraped together by one JobSpy process.
+  const jobspySites = JOBSPY_SITES.filter((s) => on(`jobspy-${s}`));
+  if (jobspySites.length) {
+    tasks.push({
+      label: "JobSpy",
+      cost: "free",
+      // JobSpy keeps what it found when its own 15-minute budget runs out.
+      timeoutMs: 20 * MIN,
+      run: async () => {
+        const { jobs, errors } = await searchJobSpy(ctx, jobspySites, 15 * MIN);
+        for (const site of jobspySites) {
+          const errs = errors[site] ?? [];
+          log(`${SITE_LABEL[site]}: ${jobs[site]?.length ?? 0} jobs${errs.length ? ` (${errs.length} searches failed: ${errs[0]})` : ""}`);
+        }
+        return jobspySites.flatMap((s) => jobs[s] ?? []);
+      },
+    });
+  }
+
+  const free: [string, string, (c: SourceContext) => Promise<RawJob[]>][] = [
+    ["remoteok", "Remote OK", searchRemoteOk],
+    ["remotive", "Remotive", searchRemotive],
+    ["weworkremotely", "We Work Remotely", searchWeWorkRemotely],
+    ["himalayas", "Himalayas", searchHimalayas],
+    ["jobicy", "Jobicy", searchJobicy],
+    ["arbeitnow", "Arbeitnow", searchArbeitnow],
+    ["hn", "Hacker News", searchHackerNews],
+    ["reddit", "Reddit", searchReddit],
+  ];
+  for (const [key, label, fn] of free) {
+    if (on(key)) tasks.push({ label, cost: "free", timeoutMs: 3 * MIN, run: () => fn(ctx) });
+  }
+
+  // Free official APIs that need a key; without one they are skipped with a note.
+  const keyed: [string, string, boolean, () => Promise<RawJob[]>][] = [
+    ["adzuna", "Adzuna", !!(keys.adzunaAppId && keys.adzunaKey), () => searchAdzuna(ctx, keys, search.remoteCountries)],
+    ["reed", "Reed", !!keys.reedKey, () => searchReed(ctx, keys)],
+    ["jooble", "Jooble", !!keys.joobleKey, () => searchJooble(ctx, keys)],
+  ];
+  const noKey: string[] = [];
+  for (const [key, label, hasKey, run] of keyed) {
+    if (!on(key)) continue;
+    if (hasKey) tasks.push({ label, cost: "free", timeoutMs: 8 * MIN, run });
+    else noKey.push(label);
+  }
+  if (noKey.length) log(`Skipped ${noKey.join(", ")}: add the free key${noKey.length > 1 ? "s" : ""} in Settings → Keys.`);
+
+  // Paid boards: one Apify run per title and location.
+  const paidBoards: [string, string, (s: SearchInput) => Promise<RawJob[]>, (l: SearchLocation) => boolean][] = [
+    ["linkedin", "LinkedIn (Apify)", searchLinkedIn, (l) => !!l.linkedin],
+    ["indeed", "Indeed (Apify)", searchIndeed, (l) => !!l.indeedCountry],
+    ["glassdoor", "Glassdoor (Apify)", searchGlassdoor, () => true],
+    ["wellfound", "Wellfound (Apify)", searchWellfound, () => true],
+  ];
+  for (const [key, label, fn, covers] of paidBoards) {
+    if (!on(key)) continue;
+    for (const location of search.locations.filter(covers)) {
+      for (const title of apifyTitles) {
+        const input = { title, location, postedWithinDays, limit: search.maxPerSearch, excludeTitleWords: search.excludeTitleWords };
+        tasks.push({ label: `${label} "${title}" in ${location.label}`, cost: "apify", timeoutMs: 11 * MIN, run: () => fn(input) });
+      }
+    }
+  }
+  if (on("google") && apifyTitles.length) {
+    const remote = search.locations.find((l) => l.remote);
+    tasks.push({
+      label: "Google career boards (Apify)",
+      cost: "apify",
+      timeoutMs: 11 * MIN,
+      run: () =>
+        searchGoogle(apifyTitles, {
+          remoteOnly: !!remote,
+          postedWithinDays,
+          tier: remote?.label ?? search.locations[0]?.label ?? "",
+          excludeTitleWords: search.excludeTitleWords,
+        }),
+    });
+  }
+  const paidPosts: [string, string, (c: SourceContext) => Promise<RawJob[]>][] = [
+    ["linkedin-posts", "LinkedIn hiring posts (Apify)", searchLinkedInPosts],
+    ["x-posts", "X hiring posts (Apify)", searchXPosts],
+    ["reddit-apify", "Reddit (Apify)", searchRedditApify],
+  ];
+  for (const [key, label, fn] of paidPosts) {
+    if (on(key)) tasks.push({ label, cost: "apify", timeoutMs: 11 * MIN, run: () => fn(ctx) });
+  }
+  if (on("craigslist") && apifyTitles.length) {
+    tasks.push({ label: "Craigslist (Apify)", cost: "apify", timeoutMs: 11 * MIN, run: () => searchCraigslist(ctx, apifyTitles, search.craigslistCities) });
+  }
+  // Paid sources need the Apify token; without it the free ones still run.
+  if (!keys.apifyToken && tasks.some((t) => t.cost === "apify")) {
+    log("Skipped the paid (Apify) sources: add your Apify token in Settings to use them.");
+    tasks.splice(0, tasks.length, ...tasks.filter((t) => t.cost !== "apify"));
+  }
+
+  const attempt = async (t: SearchTask) => {
+    if (t.cost === "apify" && budgetHit) return;
     try {
-      const jobs = await fn();
+      const jobs = await withTimeout(t.run(), t.timeoutMs, t.label);
       found.push(...jobs);
-      log(`${label}: ${jobs.length} jobs`);
+      if (t.label !== "JobSpy") log(`${t.label}: ${jobs.length} jobs`);
     } catch (err) {
       if (err instanceof BudgetError) budgetHit = true;
-      log(`${label}: ${errorMessage(err)}`);
+      log(`${t.label}: ${errorMessage(err)}`);
     }
   };
+  // JobSpy is the slowest, so it starts first and the rest share the other slots.
+  await pool(tasks, 4, attempt);
+  if (budgetHit) log("Paid sources stopped at the Apify monthly cap; free sources ran as usual.");
 
-  for (const location of search.locations) {
-    for (const title of search.titles) {
-      const input = {
-        title,
-        location,
-        postedWithinDays,
-        limit: search.maxPerSearch,
-        excludeTitleWords: search.excludeTitleWords,
-      };
-      if (search.sources.linkedin && location.linkedin) {
-        await attempt(`LinkedIn "${title}" in ${location.label}`, () => searchLinkedIn(input));
-      }
-      if (search.sources.indeed && location.indeedCountry) {
-        await attempt(`Indeed "${title}" in ${location.label}`, () => searchIndeed(input));
-      }
-    }
+  // Every company board seen in links, saved jobs or the watch list is checked directly.
+  if (on("ats")) {
+    const db = await getDb();
+    const saved = await db.select({ link: schema.jobs.link }).from(schema.jobs);
+    const added = await rememberBoards([
+      ...search.watchCompanies,
+      ...found.flatMap((j) => [j.link, j.applyUrl]),
+      ...saved.map((j) => j.link),
+    ]);
+    if (added) log(`Found ${added} new company career pages to check`);
+    await attempt({ label: "Company career pages", cost: "free", timeoutMs: 10 * MIN, run: () => searchCareerPages(ctx) });
   }
 
-  if (search.sources.google && search.titles.length) {
-    const remote = search.locations.find((l) => l.remote);
-    await attempt("Google career boards", () =>
-      searchGoogle(search.titles, {
-        remoteOnly: !!remote,
-        postedWithinDays,
-        tier: remote?.label ?? search.locations[0]?.label ?? "",
-        excludeTitleWords: search.excludeTitleWords,
-      }),
-    );
+  // Boards let reposted and promoted listings through their date filters.
+  const recent = found.filter((j) => !postedTooLongAgo(j.posted, postedWithinDays));
+  if (recent.length < found.length) {
+    log(`Dropped ${found.length - recent.length} jobs posted before the ${postedWithinLabel(postedWithinDays)}`);
   }
-  return found;
+  const bySource = new Map<string, number>();
+  for (const j of recent) bySource.set(j.source, (bySource.get(j.source) ?? 0) + 1);
+  if (bySource.size) {
+    log(`Found by source: ${[...bySource].sort((a, b) => b[1] - a[1]).map(([s, n]) => `${s} ${n}`).join(" · ")}`);
+  }
+  return recent;
 }
 
 // ---------- store ----------
@@ -98,8 +266,41 @@ export async function upsertCompany(
   return id;
 }
 
+/**
+ * Saved jobs that turn out to be the same posting (saved before the duplicate
+ * check knew them apart) are merged: the copy furthest along stays and lists
+ * the others' sources. Only copies still in Found or Skipped without a sent
+ * email are removed; jobs you acted on are never touched.
+ */
+async function mergeSavedDuplicates(log: Log) {
+  const db = await getDb();
+  const jobs = await db
+    .select({
+      id: schema.jobs.id, company: schema.jobs.company, role: schema.jobs.role, link: schema.jobs.link,
+      source: schema.jobs.source, sourceId: schema.jobs.sourceId, status: schema.jobs.status, alsoOn: schema.jobs.alsoOn,
+    })
+    .from(schema.jobs);
+  const sent = new Set(
+    (await db.select({ jobId: schema.outbox.jobId }).from(schema.outbox).where(eq(schema.outbox.status, "sent"))).map((o) => o.jobId),
+  );
+  let removed = 0;
+  for (const { keep, extra } of findDuplicates(jobs)) {
+    const drop = extra.filter((j) => ["Found", "Skipped"].includes(j.status) && !sent.has(j.id));
+    if (!drop.length) continue;
+    const alsoOn = [...new Set([...(keep.alsoOn ?? []), ...drop.map((j) => j.source ?? "")])].filter((s) => s && s !== keep.source);
+    await db.update(schema.jobs).set({ alsoOn }).where(eq(schema.jobs.id, keep.id));
+    const ids = drop.map((j) => j.id);
+    await db.delete(schema.outbox).where(inArray(schema.outbox.jobId, ids));
+    await db.delete(schema.jobs).where(inArray(schema.jobs.id, ids));
+    removed += ids.length;
+    log(`Merged duplicate: ${keep.company} · ${keep.role} (removed ${ids.length} extra cop${ids.length === 1 ? "y" : "ies"})`);
+  }
+  return removed;
+}
+
 export async function storeJobs(raw: RawJob[], filter: JobFilter, log: Log): Promise<number> {
   const db = await getDb();
+  await mergeSavedDuplicates(log);
   const existing = await db
     .select({
       id: schema.jobs.id,
@@ -110,12 +311,15 @@ export async function storeJobs(raw: RawJob[], filter: JobFilter, log: Log): Pro
       sourceId: schema.jobs.sourceId,
     })
     .from(schema.jobs);
-  const unique = dedupeJobs(raw, existing);
+  const dismissed = await dismissedKeys();
+  const onBoard = dedupeJobs(raw, existing);
+  const unique = dedupeJobs(onBoard, [], dismissed);
   const fresh = unique.filter((j) => !rejectReason(j, filter));
   const taken = new Set(existing.map((j) => j.id));
 
   for (const j of fresh) {
-    const cId = await upsertCompany(j.company, j.company_);
+    // A post signed only by a handle ("u/name", "@name") names no company to look up.
+    const cId = /^(u\/|@)/.test(j.company) ? null : await upsertCompany(j.company, j.company_);
     await db.insert(schema.jobs).values({
       id: jobId(j.company, j.role, taken),
       company: j.company,
@@ -124,15 +328,18 @@ export async function storeJobs(raw: RawJob[], filter: JobFilter, log: Log): Pro
       status: "Found",
       source: j.source,
       sourceId: j.sourceId,
+      kind: j.kind ?? "listing",
+      alsoOn: j.alsoOn ?? [],
       pay: j.pay || null,
       tier: j.tier || null,
       mode: j.mode || null,
       location: j.location || null,
       description: j.description || null,
       found: today(),
+      postedAt: parsePosted(j.posted),
       companyId: cId,
     });
-    if (j.recruiter?.name) {
+    if (j.recruiter?.name && cId) {
       const contactId = slug(`${j.recruiter.name} ${j.company}`, "contact");
       await db
         .insert(schema.contacts)
@@ -143,12 +350,15 @@ export async function storeJobs(raw: RawJob[], filter: JobFilter, log: Log): Pro
           name: j.recruiter.name,
           title: "Job poster",
           linkedin: j.recruiter.linkedin || null,
-          source: "LinkedIn",
+          source: j.source,
         })
         .onConflictDoNothing();
     }
   }
-  log(`Saved ${fresh.length} new jobs (${raw.length - unique.length} duplicates skipped)`);
+  log(
+    `Saved ${fresh.length} new jobs (skipped ${raw.length - onBoard.length} already on your board or found twice` +
+      `${onBoard.length > unique.length ? `, ${onBoard.length - unique.length} you deleted before` : ""})`,
+  );
   if (unique.length > fresh.length) {
     log(`Filtered out ${unique.length - fresh.length} jobs (pay or location)`);
   }
@@ -185,10 +395,11 @@ export async function scoreNewJobs(
           description: j.description ?? j.notes,
         })),
         {
-          titles: settings.search.titles,
+          titles: searchTitles(settings.search),
           locations: settings.search.locations.map((l) => l.label),
           minPay: describeMinPay(settings.search.minPay),
           homeCity: settings.search.homeCity.trim(),
+          homePlaces: homePlaces(settings.search),
         },
       );
       for (const r of results) {
@@ -393,33 +604,60 @@ export async function bestContact(cId: string | null) {
 }
 
 /**
- * Writes the email and CV selection for one job. Puts it in the Outbox when
- * there is someone to send it to; otherwise the draft stays on the job for a
- * portal application.
+ * Reads up on the company, then writes the cover letter (also the email) and
+ * CV selection for one job. Site text is cached on the company for a month.
  */
-export async function draftForJob(job: Job, profile: Profile): Promise<{ queued: boolean }> {
+export async function writeApplication(
+  job: Job,
+  profile: Profile,
+  contact: { name?: string | null; title?: string | null } | null,
+): Promise<OutreachDraft> {
   const db = await getDb();
   const [company] = job.companyId
     ? await db.select().from(schema.companies).where(eq(schema.companies.id, job.companyId))
     : [];
-  const contact = await bestContact(job.companyId);
-  const draft = await draftApplication(
+  const research = await researchCompany(
+    { company: job.company, link: job.link, description: job.description },
+    company ?? null,
+  );
+  if (company && research.fresh) {
+    await db
+      .update(schema.companies)
+      .set({ research: research.fresh, researchedAt: new Date(), updatedAt: new Date() })
+      .where(eq(schema.companies.id, company.id));
+  }
+  return draftApplication(
     profile,
     {
       company: job.company,
       role: job.role,
       location: job.location,
+      mode: job.mode,
+      link: job.link,
       description: job.description ?? job.notes,
-      companyAbout: company?.about,
+      research: research.text,
     },
     contact,
   );
+}
+
+/**
+ * Writes the cover letter and CV selection for one job. Puts it in the Outbox
+ * when there is someone to send it to; otherwise the draft stays on the job
+ * for a portal application. An unsent Outbox email is replaced by a rewrite.
+ */
+export async function draftForJob(job: Job, profile: Profile): Promise<{ queued: boolean }> {
+  const db = await getDb();
+  const contact = await bestContact(job.companyId);
+  const draft = await writeApplication(job, profile, contact);
 
   await db
     .update(schema.jobs)
     .set({
       // A cover letter the user already has is never overwritten.
       cover: job.cover || draft.body,
+      // The pitch describes the letter on the job, so it is replaced only with it.
+      pitch: job.cover ? job.pitch : draft.pitch,
       cvVariant: draft.cvVariant,
       status: job.status === "Found" ? "Drafted" : job.status,
       updatedAt: new Date(),
@@ -428,10 +666,22 @@ export async function draftForJob(job: Job, profile: Profile): Promise<{ queued:
 
   if (!contact?.email) return { queued: false };
   const existing = await db
-    .select({ id: schema.outbox.id })
+    .select({ id: schema.outbox.id, status: schema.outbox.status, followUpOf: schema.outbox.followUpOf })
     .from(schema.outbox)
     .where(eq(schema.outbox.jobId, job.id));
-  if (existing.length) return { queued: false };
+  if (existing.length) {
+    // Keep the Outbox in step with a rewritten letter, while nothing has gone out.
+    const unsent = existing.filter((o) => !o.followUpOf && ["queued", "approved", "failed"].includes(o.status));
+    if (!job.cover && unsent.length === existing.length) {
+      for (const o of unsent) {
+        await db
+          .update(schema.outbox)
+          .set({ subject: draft.subject, body: draft.body, cvVariant: draft.cvVariant, updatedAt: new Date() })
+          .where(eq(schema.outbox.id, o.id));
+      }
+    }
+    return { queued: false };
+  }
 
   await db.insert(schema.outbox).values({
     id: uid(),

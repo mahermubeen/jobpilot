@@ -2,6 +2,8 @@ import { eq } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
 import { emptyProfile, type Profile } from "@/lib/cv/types";
 import type { MinPay } from "@/lib/pay";
+import { DEFAULT_CHAIN, normaliseChain, type ChainEntry } from "@/lib/ai/catalog";
+import { defaultSources } from "@/lib/sources/catalog";
 
 export type SearchLocation = {
   /** Shown on job cards, e.g. "Worldwide remote". */
@@ -15,21 +17,68 @@ export type SearchLocation = {
   remote: boolean;
 };
 
+/** Your standing facts for application forms. The question bank answers from these without AI. */
+export type ApplyFacts = {
+  city: string;
+  region: string;
+  country: string;
+  postalCode: string;
+  address: string;
+  nationality: string;
+  pronouns: string;
+  /** Countries you may work in without sponsorship. */
+  authorizedCountries: string[];
+  totalYears: string;
+  noticeDays: number;
+  relocate: boolean;
+  workModes: ("Remote" | "Hybrid" | "Onsite")[];
+  employmentTypes: ("Full-time" | "Part-time" | "Contract" | "Internship")[];
+  travel: boolean;
+  timezone: string;
+  hoursOverlap: string;
+  english: string;
+  languages: string;
+  /** Monthly amounts in `currency`. Range maximum is asked for when a job states one, never below `floor`. */
+  salary: { currency: string; target: number; last: number; floor: number };
+  gender: string;
+  ethnicity: string;
+  hispanic: string;
+  veteran: string;
+  disability: string;
+  orientation: string;
+  transgender: string;
+};
+
 export type AppSettings = {
   setupDone: boolean;
   ai: {
-    /** claude-cli uses the `claude` command on this machine; anthropic uses an API key. */
-    mode: "claude-cli" | "anthropic";
-    cliModels: { write: string; score: string };
-    apiModels: { write: string; score: string };
+    /** AIs in the order they are tried. Each task goes to the first one that is on, set up and has credit. */
+    chain: ChainEntry[];
   };
   search: {
     titles: string[];
     locations: SearchLocation[];
     excludeTitleWords: string[];
-    postedWithinDays: 1 | 7 | 30;
+    /** AI-suggested alternative names for the titles, searched as well. */
+    titleVariants: string[];
+    /** What the variants were made from (titles and CV), so they are remade only when that changes. */
+    variantsKey: string;
+    /** Variants the user removed; never searched or suggested again. */
+    excludedVariants: string[];
+    /** Make variants automatically before each search. */
+    autoVariants: boolean;
+    /** Company career pages to check every run, e.g. https://jobs.lever.co/acme. */
+    watchCompanies: string[];
+    /** Countries searched for remote locations on boards with no worldwide site (Adzuna). */
+    remoteCountries: string[];
+    /** Craigslist city subdomains to search, e.g. "sfbay", "london". */
+    craigslistCities: string[];
+    /** Most jobs per search on paid (Apify) sources. */
     maxPerSearch: number;
-    sources: { linkedin: boolean; indeed: boolean; google: boolean };
+    /** Most jobs per search on free sources. */
+    maxPerFreeSearch: number;
+    /** On/off per source key in lib/sources/catalog.ts. */
+    sources: Record<string, boolean>;
     /** Jobs stating pay below this are dropped. Amount 0 turns the rule off. */
     minPay: MinPay;
     /** Drop equity-only, volunteer and unpaid jobs. */
@@ -45,16 +94,28 @@ export type AppSettings = {
   };
   schedule: { enabled: boolean; time: string };
   outreach: { followUpDays: number; callScript: string };
-  /** Standing answers for application forms, used by the browser extension. */
+  /** Your own answers to application questions, used before any AI. */
   applyAnswers: { question: string; answer: string }[];
+  applyFacts: ApplyFacts;
 };
 
 export type Secrets = {
   anthropicKey: string;
+  openaiKey: string;
+  geminiKey: string;
+  xaiKey: string;
+  groqKey: string;
+  /** Key for the "Other OpenAI-style server" entry. */
+  aiKey: string;
   apifyToken: string;
   gmailUser: string;
   gmailAppPassword: string;
   apolloKey: string;
+  /** Free job board API keys. */
+  adzunaAppId: string;
+  adzunaKey: string;
+  reedKey: string;
+  joobleKey: string;
 };
 
 export const defaultSettings: AppSettings = {
@@ -68,18 +129,49 @@ export const defaultSettings: AppSettings = {
     "Total years of professional experience",
     "Earliest start date",
   ].map((question) => ({ question, answer: "" })),
-  ai: {
-    mode: "claude-cli",
-    cliModels: { write: "opus", score: "haiku" },
-    apiModels: { write: "claude-opus-5-5", score: "claude-haiku-4-5" },
+  ai: { chain: DEFAULT_CHAIN },
+  applyFacts: {
+    city: "",
+    region: "",
+    country: "",
+    postalCode: "",
+    address: "",
+    nationality: "",
+    pronouns: "",
+    authorizedCountries: [],
+    totalYears: "",
+    noticeDays: 14,
+    relocate: false,
+    workModes: ["Remote", "Hybrid", "Onsite"],
+    employmentTypes: ["Full-time", "Contract"],
+    travel: true,
+    timezone: "",
+    hoursOverlap: "Yes, I can overlap with US and European working hours.",
+    english: "Fluent",
+    languages: "",
+    salary: { currency: "USD", target: 0, last: 0, floor: 0 },
+    gender: "Prefer not to say",
+    ethnicity: "Prefer not to say",
+    hispanic: "Prefer not to say",
+    veteran: "Prefer not to say",
+    disability: "Prefer not to say",
+    orientation: "Prefer not to say",
+    transgender: "Prefer not to say",
   },
   search: {
     titles: [],
     locations: [],
     excludeTitleWords: ["intern", "unpaid", "volunteer"],
-    postedWithinDays: 7,
+    titleVariants: [],
+    variantsKey: "",
+    excludedVariants: [],
+    autoVariants: true,
+    watchCompanies: [],
+    remoteCountries: ["us", "gb", "ca", "au", "de"],
+    craigslistCities: ["sfbay", "newyork", "losangeles", "seattle", "boston", "austin", "chicago", "london", "toronto"],
     maxPerSearch: 15,
-    sources: { linkedin: true, indeed: true, google: true },
+    maxPerFreeSearch: 50,
+    sources: defaultSources(),
     minPay: { amount: 0, currency: "USD", period: "year" },
     dropUnpaid: false,
     homeCity: "",
@@ -98,10 +190,19 @@ export const defaultSettings: AppSettings = {
 
 export const emptySecrets: Secrets = {
   anthropicKey: "",
+  openaiKey: "",
+  geminiKey: "",
+  xaiKey: "",
+  groqKey: "",
+  aiKey: "",
   apifyToken: "",
   gmailUser: "",
   gmailAppPassword: "",
   apolloKey: "",
+  adzunaAppId: "",
+  adzunaKey: "",
+  reedKey: "",
+  joobleKey: "",
 };
 
 async function read<T>(key: string): Promise<T | null> {
@@ -129,17 +230,53 @@ export async function getSettings(): Promise<AppSettings> {
   return {
     ...defaultSettings,
     ...saved,
-    ai: { ...defaultSettings.ai, ...saved.ai },
+    ai: { chain: migrateChain(saved.ai) },
+    applyFacts: {
+      ...defaultSettings.applyFacts,
+      ...migrateFacts(saved.applyAnswers),
+      ...saved.applyFacts,
+      salary: { ...defaultSettings.applyFacts.salary, ...migrateFacts(saved.applyAnswers).salary, ...saved.applyFacts?.salary },
+    },
     search: {
       ...defaultSettings.search,
       ...saved.search,
-      sources: { ...defaultSettings.search.sources, ...saved.search?.sources },
+      // Sources added since the settings were saved start at their default.
+      sources: { ...defaultSources(), ...saved.search?.sources },
       minPay: { ...defaultSettings.search.minPay, ...saved.search?.minPay },
     },
     caps: { ...defaultSettings.caps, ...saved.caps },
     schedule: { ...defaultSettings.schedule, ...saved.schedule },
     outreach: { ...defaultSettings.outreach, ...saved.outreach },
   };
+}
+
+type LegacyAi = { chain?: Partial<ChainEntry>[]; mode?: string; cliModels?: { write: string; score: string } };
+
+/** Settings saved before the AI chain existed kept one AI; start the chain from it. */
+function migrateChain(saved: LegacyAi | undefined): ChainEntry[] {
+  if (saved?.chain) return normaliseChain(saved.chain);
+  const chain = normaliseChain(DEFAULT_CHAIN);
+  const claude = chain.find((e) => e.kind === "claude-cli")!;
+  if (saved?.cliModels) Object.assign(claude, saved.cliModels);
+  if (saved?.mode === "anthropic") chain.find((e) => e.kind === "anthropic")!.enabled = true;
+  return chain;
+}
+
+/** Fills facts from the free-text answers saved before facts existed. */
+function migrateFacts(answers: { question: string; answer: string }[] | undefined): Partial<ApplyFacts> {
+  const out: Partial<ApplyFacts> & { salary?: ApplyFacts["salary"] } = {};
+  for (const { question, answer } of answers ?? []) {
+    const q = question.toLowerCase();
+    const a = answer.trim();
+    if (!a) continue;
+    const num = Number(a.replace(/[^\d.]/g, ""));
+    if (/salary/.test(q) && num > 0) out.salary = { currency: num >= 50_000 ? "PKR" : "USD", target: num, last: 0, floor: 0 };
+    else if (/notice/.test(q) && num >= 0) out.noticeDays = /week/i.test(a) ? num * 7 : /month/i.test(a) ? num * 30 : num;
+    else if (/authori[sz]/.test(q)) out.authorizedCountries = a.split(/[,;/]| and /).map((c) => c.trim()).filter(Boolean);
+    else if (/relocat/.test(q)) out.relocate = /^y/i.test(a);
+    else if (/years/.test(q) && num > 0) out.totalYears = String(num);
+  }
+  return out;
 }
 
 export async function saveSettings(next: AppSettings) {
@@ -166,10 +303,19 @@ export async function secretsStatus() {
   const s = await getSecrets();
   return {
     anthropicKey: !!s.anthropicKey,
+    openaiKey: !!s.openaiKey,
+    geminiKey: !!s.geminiKey,
+    xaiKey: !!s.xaiKey,
+    groqKey: !!s.groqKey,
+    aiKey: !!s.aiKey,
     apifyToken: !!s.apifyToken,
     gmailUser: s.gmailUser,
     gmailAppPassword: !!s.gmailAppPassword,
     apolloKey: !!s.apolloKey,
+    adzunaAppId: !!s.adzunaAppId,
+    adzunaKey: !!s.adzunaKey,
+    reedKey: !!s.reedKey,
+    joobleKey: !!s.joobleKey,
   };
 }
 

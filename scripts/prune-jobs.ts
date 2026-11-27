@@ -9,12 +9,12 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { dataDir, getDb, schema } from "../lib/db";
+import { KEEP_STATUSES } from "../lib/pipeline/cleanup";
+import { dismissJobs } from "../lib/pipeline/forget";
 import { rejectReason } from "../lib/pipeline/filter";
 import { getSettings } from "../lib/settings";
-
-const KEEP_STATUSES = ["Applied", "Replied", "Interview", "Offer"];
 
 async function main() {
   const apply = process.argv.includes("--apply");
@@ -53,8 +53,8 @@ async function main() {
       .where(eq(schema.outbox.status, "sent"));
     const emailed = new Set(sent.map((s) => s.jobId));
     const safe = ids.filter((id) => !emailed.has(id));
-    await db.delete(schema.outbox).where(inArray(schema.outbox.jobId, safe));
-    await db.delete(schema.jobs).where(inArray(schema.jobs.id, safe));
+    // Remembered, so a later search does not add them back.
+    await dismissJobs(safe);
     console.log(`Deleted ${safe.length} jobs.`);
     if (safe.length < ids.length) console.log(`Kept ${ids.length - safe.length} that already have a sent email.`);
   }

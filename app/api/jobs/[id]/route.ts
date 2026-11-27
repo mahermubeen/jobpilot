@@ -2,6 +2,8 @@ import { eq } from "drizzle-orm";
 import { HttpError, pick, route, type IdParams } from "@/lib/api";
 import { getDb, schema } from "@/lib/db";
 import { JOB_FIELDS } from "@/lib/fields";
+import { toPostedAt } from "@/lib/pipeline/cleanup";
+import { dismissJobs } from "@/lib/pipeline/forget";
 import { today } from "@/lib/util";
 
 const APPLIED_PLUS = new Set(["Applied", "Replied", "Interview", "Offer", "Rejected"]);
@@ -13,6 +15,7 @@ export const PATCH = route(async (req: Request, { params }: IdParams) => {
   const [job] = await db.select().from(schema.jobs).where(eq(schema.jobs.id, id));
   if (!job) throw new HttpError(404, "Job not found.");
   if (patch.flags && !Array.isArray(patch.flags)) delete patch.flags;
+  if ("postedAt" in patch) patch.postedAt = toPostedAt(patch.postedAt);
   if (typeof patch.status === "string" && APPLIED_PLUS.has(patch.status) && !job.applied && !patch.applied) {
     patch.applied = today();
   }
@@ -25,8 +28,7 @@ export const PATCH = route(async (req: Request, { params }: IdParams) => {
 
 export const DELETE = route(async (_req: Request, { params }: IdParams) => {
   const { id } = await params;
-  const db = await getDb();
-  await db.delete(schema.outbox).where(eq(schema.outbox.jobId, id));
-  await db.delete(schema.jobs).where(eq(schema.jobs.id, id));
+  // Remembered, so a later search does not add it back.
+  await dismissJobs([id]);
   return { ok: true };
 });

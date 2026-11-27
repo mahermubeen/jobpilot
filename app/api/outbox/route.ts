@@ -1,6 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import { HttpError, route } from "@/lib/api";
-import { draftApplication } from "@/lib/ai/tasks";
+import { writeApplication } from "@/lib/pipeline/steps";
 import { profileIsReady } from "@/lib/cv/types";
 import { getDb, schema } from "@/lib/db";
 import { sentTodayCount } from "@/lib/pipeline/send";
@@ -63,11 +63,7 @@ export const POST = route(async (req: Request) => {
     throw new HttpError(400, "Add a job for this company first, so the email has a role to apply for.");
   }
 
-  const draft = await draftApplication(
-    profile,
-    { company: job.company, role: job.role, location: job.location, description: job.description ?? job.notes },
-    contact,
-  );
+  const draft = await writeApplication(job, profile, contact);
   const id = uid();
   await db.insert(schema.outbox).values({
     id,
@@ -85,6 +81,7 @@ export const POST = route(async (req: Request) => {
       .set({
         cvVariant: draft.cvVariant,
         cover: job.cover || draft.body,
+        pitch: job.cover ? job.pitch : draft.pitch,
         status: job.status === "Found" ? "Drafted" : job.status,
         updatedAt: new Date(),
       })
