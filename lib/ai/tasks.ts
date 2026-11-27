@@ -143,18 +143,19 @@ export type JobForDraft = {
   research?: string | null;
 };
 
-// A real letter that got the shape right. Its content belongs to another company.
-const EXAMPLE_LETTER = `Subject: I designed an MCP agent that finishes after-call work in Dynamics 365 | AI Engineer
+// An example of the right shape and tone. The candidate, company and products
+// are fictional; the prompt tells the model not to reuse any of it.
+const EXAMPLE_LETTER = `Subject: I designed a delivery-exception agent for the Tidewell dispatch console | AI Engineer
 
 Dear Hiring Team,
 
-I'm applying for the AI Engineer role in the Agent Factory team.
+I'm applying for the AI Engineer role in the Dispatch Automation team.
 
-The problem: after each Teams contact-centre call, the human agent still has to write the summary, update the customer record and create the case. It's slow, repetitive work.
+The problem: when a delivery fails, a dispatcher still reads the driver's note, checks the order and messages the customer by hand. On busy days that queue holds hundreds of exceptions.
 
-My approach: an MCP server that gives an AI agent secure access to Dynamics 365. After the call, the agent drafts the summary, finds the customer and prepares the case. The human agent confirms in one click, and the AI acts only with that agent's own Entra ID permissions, logging every action.
+My approach: an agent inside the dispatch console that reads each exception, matches it to the order and drafts the next step: rebook, refund or a customer message. The dispatcher approves it in one click, the agent acts only with that dispatcher's permissions, and every action is logged.
 
-About me: 6 years as a Full Stack Engineer and Tech Lead. I've implemented Microsoft Teams SSO (OAuth 2.0), shipped OpenAI and Claude features to production, and built real-time voice and chat systems for OyeTalk and StreamKar, apps with millions of users. I'm currently strengthening my C#/.NET to work fully in your stack.
+About me: 7 years as a Full Stack Engineer and Tech Lead. At Northwind Labs I shipped LLM features to production and cut support handling time by 30%. At Example Corp I built a real-time chat system used by 200,000 people a day. I'm currently strengthening my Go to work fully in your stack.
 
 Could I walk you through it in a 10-minute call?
 
