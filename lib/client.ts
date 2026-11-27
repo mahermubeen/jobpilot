@@ -97,3 +97,11 @@ export function timeInfo(tz: string | null | undefined) {
     return null;
   }
 }
+
+/**
+ * A job's listing link marked with its JobPilot id, so the browser extension
+ * knows which job a tab opened from JobPilot is for (it removes the mark).
+ * Links that already use # for routing are left alone.
+ */
+export const jobLink = (link: string, jobId: string) =>
+  link.includes("#") ? link : `${link}#jobpilot-job=${encodeURIComponent(jobId)}`;

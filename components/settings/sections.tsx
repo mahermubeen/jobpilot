@@ -5,10 +5,15 @@ import { Button, Card, Check, Input, Label, Select, Tag, Textarea, useAction } f
 import { api, useLoad } from "@/lib/client";
 import type { Profile } from "@/lib/cv/types";
 import { CURRENCIES } from "@/lib/pay";
-import type { AppSettings, SearchLocation, Secrets } from "@/lib/settings";
+import { AI_CATALOG, type AiKind, type ChainEntry } from "@/lib/ai/catalog";
+import type { DetectedAi } from "@/lib/ai/detect";
+import type { ApplyFacts, AppSettings, SearchLocation, Secrets } from "@/lib/settings";
+import { SOURCES, type SourceDef } from "@/lib/sources/catalog";
+import { searchTitles } from "@/lib/sources/match";
 
 type SecretStatus = {
-  anthropicKey: boolean; apifyToken: boolean; gmailUser: string; gmailAppPassword: boolean; apolloKey: boolean;
+  anthropicKey: boolean; aiKey: boolean; openaiKey: boolean; geminiKey: boolean; xaiKey: boolean; groqKey: boolean; apifyToken: boolean; gmailUser: string; gmailAppPassword: boolean; apolloKey: boolean;
+  adzunaAppId: boolean; adzunaKey: boolean; reedKey: boolean; joobleKey: boolean;
 };
 type Loaded = { settings: AppSettings; secrets: SecretStatus; profile: Profile; profileReady: boolean };
 
@@ -46,9 +51,160 @@ const A = ({ href, children }: { href: string; children: React.ReactNode }) => (
   <a href={href} target="_blank" rel="noopener noreferrer" className="font-semibold text-accent hover:underline">{children}</a>
 );
 
+// ---------- AI ----------
+
+type ChainState = {
+  found: DetectedAi;
+  status: { kind: AiKind; enabled: boolean; missing: string | null; parked: { reason: string; message: string; until: number | null } | null; ready: boolean }[];
+  usage: { day: string; calls: Partial<Record<AiKind, number>>; tokens?: Partial<Record<AiKind, { in: number; out: number }>>; last?: AiKind };
+};
+
+const timeOf = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+function chainTag(kind: AiKind, st: ChainState["status"][number] | undefined, found: DetectedAi | undefined) {
+  if (!st) return null;
+  if (!st.enabled) return <Tag>Off</Tag>;
+  if (kind === "claude-cli" && found && !found.claude.installed) return <Tag tone="warn">Not installed</Tag>;
+  if (kind === "gemini-cli" && found && !found.gemini.installed) return <Tag tone="warn">Not installed</Tag>;
+  if (kind === "ollama" && found && !found.ollama.running) return <Tag tone="warn">Ollama not running</Tag>;
+  if (st.missing) return <Tag tone="warn">{st.missing}</Tag>;
+  if (st.parked) {
+    const until = st.parked.until ? ` until ${timeOf(st.parked.until)}` : "";
+    const label = st.parked.reason === "rate" ? `Rate-limited${until}` : st.parked.reason === "quota" ? `Out of credits${until}` : st.parked.reason === "auth" ? "Key rejected" : `Failing${until}`;
+    return <span title={st.parked.message}><Tag tone="bad">{label}</Tag></span>;
+  }
+  return <Tag tone="good">Ready</Tag>;
+}
+
+/** Write/score model boxes, suggesting the models this AI offers. */
+function ModelBoxes({ entry, onChange, reloadKey }: { entry: ChainEntry; onChange: (e: ChainEntry) => void; reloadKey: number }) {
+  const { data } = useLoad<{ models: string[] }>(`/api/settings/ai-models?kind=${entry.kind}&r=${reloadKey}`);
+  const options = data?.models ?? AI_CATALOG[entry.kind].suggestions;
+  const id = `models-${entry.kind}`;
+  const box = (k: "write" | "score") =>
+    entry.kind === "ollama" && options.length ? (
+      <Select value={entry[k]} onChange={(e) => onChange({ ...entry, [k]: e.target.value })}>
+        <option value="">Pick a model…</option>
+        {options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </Select>
+    ) : (
+      <Input list={id} value={entry[k]} onChange={(e) => onChange({ ...entry, [k]: e.target.value })} />
+    );
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      <datalist id={id}>{options.map((o) => <option key={o} value={o} />)}</datalist>
+      <Label label="Model for writing" hint="CVs, cover letters, open answers">{box("write")}</Label>
+      <Label label="Model for quick tasks" hint="Scoring jobs, short form answers">{box("score")}</Label>
+    </div>
+  );
+}
+
+function AiChainCard({ state, secrets, sec, saveAll }: {
+  state: SettingsState;
+  secrets: SecretStatus;
+  sec: (k: keyof Secrets) => { value: string; onChange: (e: { target: { value: string } }) => void };
+  saveAll: () => Promise<void>;
+}) {
+  const { settings, setSettings } = state;
+  const { data: live, reload } = useLoad<ChainState>("/api/settings/ai-providers", 15_000);
+  const [open, setOpen] = useState<AiKind | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const { busy, run } = useAction();
+  if (!settings) return null;
+  const chain = settings.ai.chain;
+  const setChain = (next: ChainEntry[]) => setSettings({ ...settings, ai: { ...settings.ai, chain: next } });
+  const setEntry = (e: ChainEntry) => setChain(chain.map((x) => (x.kind === e.kind ? e : x)));
+  const move = (i: number, d: -1 | 1) => {
+    const next = [...chain];
+    const j = i + d;
+    if (j < 0 || j >= next.length) return;
+    [next[i], next[j]] = [next[j], next[i]];
+    setChain(next);
+  };
+  const statusOf = (k: AiKind) => live?.status.find((x) => x.kind === k);
+  const nowUsing = chain.find((e) => statusOf(e.kind)?.ready);
+  const connected = live?.status.filter((x) => x.enabled && !x.missing).length ?? 0;
+  const enabled = chain.filter((e) => e.enabled).length;
+  const calls = Object.entries(live?.usage.calls ?? {}).filter(([, n]) => n);
+  const total = calls.reduce((t, [, n]) => t + (n ?? 0), 0);
+  const tokensOf = (k: string) => {
+    const t = live?.usage.tokens?.[k as AiKind];
+    return t ? t.in + t.out : 0;
+  };
+  const totalTokens = calls.reduce((t, [k]) => t + tokensOf(k), 0);
+  const kTok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  const save = () =>
+    run("ai-save", async () => {
+      await saveAll();
+      await reload();
+      setReloadKey((k) => k + 1);
+      return "Saved";
+    });
+
+  return (
+    <Card className="grid gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <H>AI (scores jobs, tailors your CV, writes letters and form answers)</H>
+        <Button small variant="primary" busy={busy === "ai-save"} onClick={save}>Save AI settings</Button>
+      </div>
+      <P>
+        Every AI task goes to the first AI below that is on, set up and has credit. When one runs out of credits, hits a rate limit or fails,
+        JobPilot sets it aside and moves to the next. Use ↑ ↓ to change the order.
+      </P>
+      <div className="rounded-lg border border-line px-3 py-2 text-sm">
+        <b>Now using:</b> {nowUsing ? AI_CATALOG[nowUsing.kind].name : <span className="text-bad">nothing — set up at least one AI</span>}
+        <span className="text-muted"> · {connected} of {enabled} switched-on AIs connected · today: {total} call{total === 1 ? "" : "s"}{totalTokens ? ` · ${kTok(totalTokens)} tokens` : ""}</span>
+        {calls.length ? <span className="text-muted"> ({calls.map(([k, n]) => `${AI_CATALOG[k as AiKind].name.split(" (")[0]} ${n}${tokensOf(k) ? ` · ${kTok(tokensOf(k))}` : ""}`).join(", ")})</span> : null}
+      </div>
+
+      <ol className="grid gap-2">
+        {chain.map((entry, i) => {
+          const info = AI_CATALOG[entry.kind];
+          const expanded = open === entry.kind;
+          return (
+            <li key={entry.kind} className="grid gap-2 rounded-lg border border-line p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="w-5 text-xs font-bold text-muted">{i + 1}.</span>
+                <Button small onClick={() => move(i, -1)} disabled={i === 0} aria-label="Move up">↑</Button>
+                <Button small onClick={() => move(i, 1)} disabled={i === chain.length - 1} aria-label="Move down">↓</Button>
+                <Check label="" checked={entry.enabled} onChange={(e) => setEntry({ ...entry, enabled: e.target.checked })} aria-label={`Use ${info.name}`} />
+                <b>{info.name}</b>
+                {chainTag(entry.kind, statusOf(entry.kind), live?.found)}
+                <span className="ml-auto" />
+                <Button small onClick={() => setOpen(expanded ? null : entry.kind)}>{expanded ? "Close" : "Set up"}</Button>
+              </div>
+              <span className="pl-7 text-sm text-muted">{info.about}</span>
+              {expanded ? (
+                <div className="grid gap-3 pl-7">
+                  <P>
+                    <b>How to connect:</b> {info.setup}
+                    {info.keyUrl ? <> <A href={info.keyUrl}>Open {info.keyUrl.replace(/^https:\/\//, "").split("/")[0]}</A></> : null}
+                  </P>
+                  {entry.kind === "custom" || entry.kind === "ollama" ? (
+                    <Label label={entry.kind === "ollama" ? "Ollama address" : "Server URL (ending in /v1)"}>
+                      <Input value={entry.baseUrl ?? ""} placeholder={entry.kind === "ollama" ? "http://127.0.0.1:11434" : "https://openrouter.ai/api/v1"} onChange={(e) => setEntry({ ...entry, baseUrl: e.target.value })} />
+                    </Label>
+                  ) : null}
+                  {info.keyName ? (
+                    <Label label="API key" hint={secrets[info.keyName] ? "A key is saved. Leave blank to keep it." : undefined}>
+                      <Input type="password" autoComplete="off" {...sec(info.keyName)} />
+                    </Label>
+                  ) : null}
+                  <ModelBoxes entry={entry} onChange={setEntry} reloadKey={reloadKey} />
+                  <TestButton target={`ai:${entry.kind}`} before={async () => { await saveAll(); setReloadKey((k) => k + 1); }} after={reload} />
+                </div>
+              ) : null}
+            </li>
+          );
+        })}
+      </ol>
+    </Card>
+  );
+}
+
 // ---------- connections ----------
 
-function TestButton({ target, before }: { target: string; before?: () => Promise<void> }) {
+function TestButton({ target, before, after }: { target: string; before?: () => Promise<void>; after?: () => unknown }) {
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [busy, setBusy] = useState(false);
   return (
@@ -62,6 +218,7 @@ function TestButton({ target, before }: { target: string; before?: () => Promise
           try {
             if (before) await before();
             setResult(await api<{ ok: boolean; message: string }>("/api/settings/test", { body: { target } }));
+            await after?.();
           } catch (e) {
             setResult({ ok: false, message: e instanceof Error ? e.message : "Test failed." });
           } finally {
@@ -77,7 +234,7 @@ function TestButton({ target, before }: { target: string; before?: () => Promise
 }
 
 export function ConnectionsSection({ state }: { state: SettingsState }) {
-  const { data, settings, setSettings, save } = state;
+  const { data, settings, save } = state;
   const [secrets, setSecrets] = useState<Partial<Secrets>>({});
   if (!data || !settings) return null;
   const s = data.secrets;
@@ -93,25 +250,7 @@ export function ConnectionsSection({ state }: { state: SettingsState }) {
 
   return (
     <div className="grid gap-4">
-      <Card className="grid gap-3">
-        <div className="flex items-center justify-between"><H>Claude (writes emails, tailors your CV, scores jobs)</H></div>
-        <div className="grid gap-2">
-          <label className="flex cursor-pointer items-start gap-2">
-            <input type="radio" name="ai" className="mt-1 accent-[var(--accent)]" checked={settings.ai.mode === "claude-cli"} onChange={() => setSettings({ ...settings, ai: { ...settings.ai, mode: "claude-cli" } })} />
-            <span><b>Use Claude Code on this computer</b><br /><span className="text-sm text-muted">No key needed. Uses the <code>claude</code> command you are already signed in to.</span></span>
-          </label>
-          <label className="flex cursor-pointer items-start gap-2">
-            <input type="radio" name="ai" className="mt-1 accent-[var(--accent)]" checked={settings.ai.mode === "anthropic"} onChange={() => setSettings({ ...settings, ai: { ...settings.ai, mode: "anthropic" } })} />
-            <span><b>Use an Anthropic API key</b><br /><span className="text-sm text-muted">For computers without Claude Code. Pay per use. Get a key at <A href="https://console.anthropic.com/settings/keys">console.anthropic.com</A>.</span></span>
-          </label>
-        </div>
-        {settings.ai.mode === "anthropic" ? (
-          <Label label="Anthropic API key" hint={s.anthropicKey ? "A key is saved. Leave blank to keep it." : undefined}>
-            <Input type="password" autoComplete="off" placeholder="sk-ant-…" {...sec("anthropicKey")} />
-          </Label>
-        ) : null}
-        <TestButton target="ai" before={saveAll} />
-      </Card>
+      <AiChainCard state={state} secrets={s} sec={sec} saveAll={saveAll} />
 
       <Card className="grid gap-3">
         <div className="flex items-center justify-between"><H>Apify (finds jobs and company contacts)</H>{saved(s.apifyToken)}</div>
@@ -120,6 +259,25 @@ export function ConnectionsSection({ state }: { state: SettingsState }) {
           <Input type="password" autoComplete="off" placeholder="apify_api_…" {...sec("apifyToken")} />
         </Label>
         <TestButton target="apify" before={saveAll} />
+      </Card>
+
+      <Card className="grid gap-3">
+        <div className="flex items-center justify-between"><H>Job board keys (free)</H>{saved(s.adzunaKey || s.reedKey || s.joobleKey)}</div>
+        <P>Each board gives a free key when you sign up: <A href="https://developer.adzuna.com/signup">Adzuna</A> (US, UK and 17 more countries), <A href="https://www.reed.co.uk/developers/jobseeker">Reed</A> (UK) and <A href="https://jooble.org/api/about">Jooble</A> (about 70 countries). A board without a key is skipped. Turn boards on or off under Search → Where to look.</P>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Label label="Adzuna app ID" hint={s.adzunaAppId ? "Saved. Leave blank to keep it." : undefined}>
+            <Input type="password" autoComplete="off" placeholder="e.g. 1a2b3c4d" {...sec("adzunaAppId")} />
+          </Label>
+          <Label label="Adzuna app key" hint={s.adzunaKey ? "Saved. Leave blank to keep it." : undefined}>
+            <Input type="password" autoComplete="off" placeholder="32 letters and numbers" {...sec("adzunaKey")} />
+          </Label>
+          <Label label="Reed API key" hint={s.reedKey ? "Saved. Leave blank to keep it." : undefined}>
+            <Input type="password" autoComplete="off" placeholder="xxxxxxxx-xxxx-…" {...sec("reedKey")} />
+          </Label>
+          <Label label="Jooble API key" hint={s.joobleKey ? "Saved. Leave blank to keep it." : undefined}>
+            <Input type="password" autoComplete="off" placeholder="xxxxxxxx-xxxx-…" {...sec("joobleKey")} />
+          </Label>
+        </div>
       </Card>
 
       <Card className="grid gap-3">
@@ -150,6 +308,67 @@ export function ConnectionsSection({ state }: { state: SettingsState }) {
 
 const newLocation = (): SearchLocation => ({ label: "", linkedin: "", indeedCountry: "", indeedLocation: "", remote: false });
 
+const SOURCE_GROUPS: { label: string; pick: (s: SourceDef) => boolean }[] = [
+  { label: "Job boards (free, scraped on this computer)", pick: (s) => s.cost === "free" && s.group === "board" },
+  { label: "Job board APIs (free, need a free key under Keys)", pick: (s) => s.cost === "free" && s.group === "api" },
+  { label: "Remote job boards (free)", pick: (s) => s.cost === "free" && s.group === "remote" },
+  { label: "Company career pages (free)", pick: (s) => s.cost === "free" && s.group === "ats" },
+  { label: "Hiring posts (free)", pick: (s) => s.cost === "free" && s.group === "social" },
+  { label: "Paid through Apify (counts against your monthly Apify cap)", pick: (s) => s.cost === "apify" },
+];
+
+function TitleVariants({ search, patch }: { search: AppSettings["search"]; patch: (p: Partial<AppSettings["search"]>) => void }) {
+  const { busy, run } = useAction();
+  const all = searchTitles(search);
+  const own = new Set(search.titles.map((t) => t.trim()));
+  const extra = all.filter((t) => !own.has(t));
+  const regenerate = () =>
+    run("variants", async () => {
+      const res = await api<{ titleVariants: string[]; variantsKey: string }>("/api/settings/title-variants", {
+        method: "POST",
+        body: { titles: search.titles, excludedVariants: search.excludedVariants },
+      });
+      patch({ titleVariants: res.titleVariants, variantsKey: res.variantsKey });
+      return `${res.titleVariants.length} more titles ready. Save to keep any other changes.`;
+    });
+
+  return (
+    <div className="grid gap-2 rounded-lg border border-line p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-sm font-semibold">
+          Searching {all.length} titles{extra.length ? ` (${search.titles.length} yours + ${extra.length} more made by AI from your CV)` : ""}
+        </span>
+        <div className="flex items-center gap-3">
+          <Check label="Make more automatically" checked={search.autoVariants} onChange={(e) => patch({ autoVariants: e.target.checked })} />
+          <Button small busy={busy === "variants"} onClick={regenerate}>{extra.length ? "Remake" : "Make now"}</Button>
+        </div>
+      </div>
+      {extra.length ? (
+        <div className="flex flex-wrap gap-1.5">
+          {extra.map((t) => (
+            <span key={t} className="inline-flex items-center gap-1 rounded-xl bg-sunk py-0.5 pr-1 pl-2 text-xs">
+              {t}
+              <button type="button" title="Add to my titles" className="rounded px-1 font-bold text-accent hover:bg-accent-soft"
+                onClick={() => patch({ titles: [...search.titles, t], titleVariants: search.titleVariants.filter((v) => v !== t) })}>+</button>
+              <button type="button" title="Don't search this" className="rounded px-1 font-bold text-muted hover:text-bad"
+                onClick={() => patch({ titleVariants: search.titleVariants.filter((v) => v !== t), excludedVariants: [...search.excludedVariants, t] })}>×</button>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <P>{search.autoVariants ? "More titles are made from your titles and CV at the start of the next search." : "Only your own titles are searched."}</P>
+      )}
+      {search.excludedVariants.length ? (
+        <p className="text-xs text-muted">
+          Removed: {search.excludedVariants.join(", ")}{" "}
+          <button type="button" className="font-semibold text-accent hover:underline" onClick={() => patch({ excludedVariants: [] })}>Allow again</button>
+        </p>
+      ) : null}
+      <p className="text-xs text-muted">“+” moves a title into your own list; “×” stops searching it. Feeds, career pages and posts are matched against all of them. The big boards (LinkedIn, Indeed…) search your own titles, topped up from these to 8; paid sources top up to 4.</p>
+    </div>
+  );
+}
+
 export function SearchSection({ state }: { state: SettingsState }) {
   const { settings, setSettings } = state;
   if (!settings) return null;
@@ -157,7 +376,9 @@ export function SearchSection({ state }: { state: SettingsState }) {
   const patch = (p: Partial<AppSettings["search"]>) => setSettings({ ...settings, search: { ...search, ...p } });
   const setLoc = (i: number, p: Partial<SearchLocation>) =>
     patch({ locations: search.locations.map((l, n) => (n === i ? { ...l, ...p } : l)) });
-  const searches = search.titles.length * search.locations.length;
+  const paidTitles = Math.min(searchTitles(search).length, Math.max(search.titles.length, 4));
+  const paidBoards = ["linkedin", "indeed", "glassdoor"].filter((k) => search.sources[k]).length;
+  const paidJobs = paidTitles * search.locations.length * paidBoards * search.maxPerSearch;
 
   return (
     <div className="grid gap-4">
@@ -166,6 +387,7 @@ export function SearchSection({ state }: { state: SettingsState }) {
         <Label label="One per line" hint="Each title is searched in each location below.">
           <Textarea value={search.titles.join("\n")} onChange={(e) => patch({ titles: e.target.value.split("\n") })} onBlur={(e) => patch({ titles: lines(e.target.value) })} placeholder={"Full Stack Engineer\nReact Native Developer"} />
         </Label>
+        <TitleVariants search={search} patch={patch} />
         <Label label="Skip titles containing (comma separated)">
           <Input value={search.excludeTitleWords.join(", ")} onChange={(e) => patch({ excludeTitleWords: e.target.value.split(",").map((w) => w.trim()).filter(Boolean) })} />
         </Label>
@@ -211,20 +433,42 @@ export function SearchSection({ state }: { state: SettingsState }) {
         </Label>
       </Card>
 
-      <Card className="grid gap-3">
-        <H>Sources and volume</H>
-        <div className="flex flex-wrap gap-4">
-          {(["linkedin", "indeed", "google"] as const).map((k) => (
-            <Check key={k} label={{ linkedin: "LinkedIn", indeed: "Indeed", google: "Google (company career boards)" }[k]} checked={search.sources[k]} onChange={(e) => patch({ sources: { ...search.sources, [k]: e.target.checked } })} />
-          ))}
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Label label="Posted within">
-            <Select value={search.postedWithinDays} onChange={(e) => patch({ postedWithinDays: Number(e.target.value) as 1 | 7 | 30 })}>
-              <option value={1}>Last 24 hours</option><option value={7}>Last 7 days</option><option value={30}>Last 30 days</option>
-            </Select>
+      <Card className="grid gap-4">
+        <H>Where to look</H>
+        <P>Free sources cost nothing. The job boards are scraped on this computer with JobSpy, which needs <A href="https://docs.astral.sh/uv/">uv</A> installed. Paid sources run on Apify and stop at your monthly cap.</P>
+        {SOURCE_GROUPS.map((g) => (
+          <div key={g.label} className="grid gap-2">
+            <span className="text-xs font-bold text-muted uppercase">{g.label}</span>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {SOURCES.filter(g.pick).map((src) => (
+                <div key={src.key} className="grid gap-0.5">
+                  <Check label={src.label} checked={!!search.sources[src.key]} onChange={(e) => patch({ sources: { ...search.sources, [src.key]: e.target.checked } })} />
+                  <span className="pl-6 text-xs text-muted">{src.hint}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        <Label label="Company career pages to watch (one link per line)" hint="Greenhouse, Lever, Ashby, Workable, SmartRecruiters or Recruitee board links, e.g. https://jobs.lever.co/acme. Checked every run, on top of the ones JobSpy and Google turn up.">
+          <Textarea value={search.watchCompanies.join("\n")} onChange={(e) => patch({ watchCompanies: e.target.value.split("\n") })} onBlur={(e) => patch({ watchCompanies: lines(e.target.value) })} placeholder={"https://boards.greenhouse.io/acme\nhttps://jobs.ashbyhq.com/beta"} />
+        </Label>
+        <Label label="Countries for remote jobs on Adzuna (two-letter codes, comma separated)" hint="Adzuna has no worldwide site, so remote locations are searched in these countries. It covers gb, us, ca, au, de, fr, nl, at, be, ch, es, it, pl, in, sg, nz, za, br, mx.">
+          <Input value={search.remoteCountries.join(", ")} onChange={(e) => patch({ remoteCountries: e.target.value.split(",").map((c) => c.trim().toLowerCase()) })} onBlur={(e) => patch({ remoteCountries: e.target.value.split(",").map((c) => c.trim().toLowerCase()).filter(Boolean) })} placeholder="us, gb, ca, au, de" />
+        </Label>
+        {search.sources.craigslist && (
+          <Label label="Craigslist cities (one per line)" hint="The part before .craigslist.org, e.g. sfbay, newyork, london, manchester, toronto, sydney. Searches software jobs and computer gigs; with a remote location only telecommute jobs. Each city costs up to 2 × “Jobs per search, paid sources”.">
+            <Textarea value={search.craigslistCities.join("\n")} onChange={(e) => patch({ craigslistCities: e.target.value.split("\n") })} onBlur={(e) => patch({ craigslistCities: lines(e.target.value) })} placeholder={"sfbay\nnewyork\nlondon"} />
           </Label>
-          <Label label="Jobs per search" hint={`${searches} searches per run → up to ${searches * search.maxPerSearch} LinkedIn jobs ≈ $${(searches * search.maxPerSearch * 0.0004).toFixed(2)} per run.`}>
+        )}
+      </Card>
+
+      <Card className="grid gap-3">
+        <H>Volume</H>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Label label="Jobs per search, free boards" hint="Higher finds more but takes longer; LinkedIn may slow down past about 100.">
+            <Input type="number" min={5} max={200} value={search.maxPerFreeSearch} onChange={(e) => patch({ maxPerFreeSearch: Math.max(1, Number(e.target.value) || 1) })} />
+          </Label>
+          <Label label="Jobs per search, paid sources" hint={paidBoards ? `${paidTitles} titles × ${search.locations.length} locations × ${paidBoards} paid boards → up to ${paidJobs} jobs ≈ $${(paidJobs * 0.0004).toFixed(2)} per run.` : "No paid job boards switched on."}>
             <Input type="number" min={5} max={100} value={search.maxPerSearch} onChange={(e) => patch({ maxPerSearch: Math.max(1, Number(e.target.value) || 1) })} />
           </Label>
         </div>
@@ -345,6 +589,168 @@ export function ProfileSection({ state }: { state: SettingsState }) {
 
 // ---------- application-form answers ----------
 
+type Learned = { id: string; question: string; answer: string | string[]; scope: string; uses: number; at: number; by?: string };
+
+/** Answers JobPilot remembered from AI replies and from forms you filled yourself: correct or forget any of them. */
+function LearnedCard() {
+  const { data, reload } = useLoad<{ answers: Learned[] }>("/api/apply/learned");
+  const [filter, setFilter] = useState("");
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const { busy, run } = useAction();
+  const list = (data?.answers ?? []).filter((a) => !filter || a.question.toLowerCase().includes(filter.toLowerCase()));
+  const shown = list.slice(0, 100);
+  const text = (a: Learned) => (Array.isArray(a.answer) ? a.answer.join(", ") : a.answer);
+  return (
+    <Card className="grid gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <H>Answers JobPilot learned ({data?.answers.length ?? 0})</H>
+        <Input className="w-56" placeholder="Search questions" value={filter} onChange={(e) => setFilter(e.target.value)} />
+      </div>
+      <P>Every answer the AI writes is kept here, so the same question is never sent to the AI again. So is every answer you type or pick yourself on a form: the extension saves it when you press Submit, Next or Continue, and your answers win over the built-in answer bank. Answers written for one job (“Why do you want to work here?”) are only reused for that job. Fix a wrong one here and it is used from then on.</P>
+      {shown.map((a) => (
+        <div key={a.id} className="grid gap-1 border-t border-line pt-2">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <b className="min-w-0 flex-1">{a.question}</b>
+            <Tag tone={a.by === "you" ? "good" : undefined}>{a.by === "you" ? "yours" : "AI"}</Tag>
+            <Tag>{a.scope === "all" ? "all jobs" : "one job"}</Tag>
+            {a.uses ? <Tag tone="good">reused {a.uses}×</Tag> : null}
+          </div>
+          <div className="flex gap-2">
+            <Input value={edits[a.id] ?? text(a)} onChange={(e) => setEdits((x) => ({ ...x, [a.id]: e.target.value }))} />
+            {edits[a.id] !== undefined && edits[a.id] !== text(a) ? (
+              <Button small variant="primary" busy={busy === `s${a.id}`} onClick={() => run(`s${a.id}`, async () => {
+                await api("/api/apply/learned", { method: "PATCH", body: { id: a.id, answer: Array.isArray(a.answer) ? edits[a.id].split(/\s*,\s*/) : edits[a.id] } });
+                setEdits((x) => {
+                  const next = { ...x };
+                  delete next[a.id];
+                  return next;
+                });
+                await reload();
+                return "Saved";
+              })}>Save</Button>
+            ) : null}
+            <Button small variant="danger" busy={busy === `d${a.id}`} onClick={() => run(`d${a.id}`, async () => {
+              await api(`/api/apply/learned?id=${encodeURIComponent(a.id)}`, { method: "DELETE" });
+              await reload();
+              return "Forgotten";
+            })}>Forget</Button>
+          </div>
+        </div>
+      ))}
+      {list.length > shown.length ? <P>Showing 100 of {list.length}. Search to find others.</P> : null}
+      {data && !data.answers.length ? <P>Nothing yet. After the extension asks the AI something, the answer shows up here.</P> : null}
+    </Card>
+  );
+}
+
+const csv = (a: string[]) => a.join(", ");
+const fromCsv = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
+
+/** Your standing facts: the question bank answers from these with no AI. */
+function FactsCard({ state }: { state: SettingsState }) {
+  const { settings, setSettings } = state;
+  if (!settings) return null;
+  const f = settings.applyFacts;
+  const set = (p: Partial<ApplyFacts>) => setSettings({ ...settings, applyFacts: { ...f, ...p } });
+  const text = (k: keyof ApplyFacts, label: string, hint?: string, placeholder?: string) => (
+    <Label label={label} hint={hint}>
+      <Input value={String(f[k] ?? "")} placeholder={placeholder} onChange={(e) => set({ [k]: e.target.value } as Partial<ApplyFacts>)} />
+    </Label>
+  );
+  const toggle = <T extends string>(k: "workModes" | "employmentTypes", all: readonly T[]) => (
+    <div className="flex flex-wrap gap-3">
+      {all.map((v) => (
+        <Check key={v} label={v} checked={(f[k] as string[]).includes(v)} onChange={(e) => set({ [k]: e.target.checked ? [...(f[k] as string[]), v] : (f[k] as string[]).filter((x) => x !== v) } as Partial<ApplyFacts>)} />
+      ))}
+    </div>
+  );
+  const money = (k: "target" | "last" | "floor", label: string, hint: string) => (
+    <Label label={label} hint={hint}>
+      <Input type="number" min={0} value={f.salary[k] || ""} onChange={(e) => set({ salary: { ...f.salary, [k]: Number(e.target.value) || 0 } })} />
+    </Label>
+  );
+  const DEMO = "Prefer not to say";
+  const demo = (k: keyof ApplyFacts, label: string, options: string[]) => (
+    <Label label={label}>
+      <Select value={String(f[k])} onChange={(e) => set({ [k]: e.target.value } as Partial<ApplyFacts>)}>
+        {[...new Set([...options, DEMO, String(f[k])])].map((o) => <option key={o} value={o}>{o}</option>)}
+      </Select>
+    </Label>
+  );
+
+  return (
+    <Card className="grid gap-4">
+      <div>
+        <H>Your facts</H>
+        <P>The built-in question bank answers about 50 common questions from these (and your CV) without any AI: location, work rights, sponsorship, notice period, start date, salary, years of experience, education, consent boxes, “how did you hear about us”, diversity questions and more. Press Save changes at the top when done.</P>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        {text("city", "City", undefined, "Islamabad")}
+        {text("region", "State / province", undefined, "Islamabad Capital Territory")}
+        {text("country", "Country", undefined, "Pakistan")}
+        {text("postalCode", "Postal code", "Left empty on forms if blank")}
+        {text("address", "Street address", "Left empty on forms if blank")}
+        {text("nationality", "Nationality", undefined, "Pakistani")}
+        {text("timezone", "Time zone", undefined, "PKT (UTC+5)")}
+        {text("pronouns", "Pronouns", undefined, "he/him")}
+        {text("totalYears", "Total years of experience", undefined, "6")}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Label label="Countries you can work in without sponsorship" hint="Comma-separated. Anywhere else, forms are told you need sponsorship.">
+          <Input value={csv(f.authorizedCountries)} placeholder="Pakistan" onChange={(e) => set({ authorizedCountries: fromCsv(e.target.value) })} />
+        </Label>
+        <Label label="Notice period (days)" hint="Start date = today + this">
+          <Input type="number" min={0} value={f.noticeDays} onChange={(e) => set({ noticeDays: Number(e.target.value) || 0 })} />
+        </Label>
+        {text("languages", "Languages", undefined, "English (Fluent), Urdu (Native)")}
+        {text("english", "English level", undefined, "Fluent")}
+        {text("hoursOverlap", "Working-hours overlap answer", "Used when a form asks in words")}
+      </div>
+
+      <div className="grid gap-2">
+        <span className="text-sm font-semibold">Work setups you accept</span>
+        {toggle("workModes", ["Remote", "Hybrid", "Onsite"] as const)}
+        <span className="text-sm font-semibold">Job types you accept</span>
+        {toggle("employmentTypes", ["Full-time", "Part-time", "Contract", "Internship"] as const)}
+        <div className="flex flex-wrap gap-4">
+          <Check label="Willing to relocate" checked={f.relocate} onChange={(e) => set({ relocate: e.target.checked })} />
+          <Check label="Willing to travel" checked={f.travel} onChange={(e) => set({ travel: e.target.checked })} />
+        </div>
+      </div>
+
+      <div className="grid gap-2">
+        <span className="text-sm font-semibold">Salary (per month)</span>
+        <P>When a job states a range, JobPilot asks for its maximum, but never less than your floor. With no range: your target for jobs in your country, or a competitive market rate (worked out once per role) for jobs abroad. Amounts are converted to the currency and period each form asks for.</P>
+        <div className="grid gap-3 sm:grid-cols-4">
+          <Label label="Currency">
+            <Select value={f.salary.currency} onChange={(e) => set({ salary: { ...f.salary, currency: e.target.value } })}>
+              {CURRENCIES.map((c) => <option key={c}>{c}</option>)}
+            </Select>
+          </Label>
+          {money("target", "Target", "What you ask for")}
+          {money("last", "Current / last", "For “current salary”")}
+          {money("floor", "Floor", "Never ask below this")}
+        </div>
+      </div>
+
+      <div className="grid gap-2">
+        <span className="text-sm font-semibold">Voluntary diversity questions</span>
+        <div className="grid gap-3 sm:grid-cols-4">
+          {demo("gender", "Gender", ["Male", "Female", "Non-binary"])}
+          {demo("ethnicity", "Race / ethnicity", ["Asian", "White", "Black or African American", "Hispanic or Latino", "Middle Eastern", "Two or more races"])}
+          {demo("hispanic", "Hispanic or Latino", ["No", "Yes"])}
+          {demo("veteran", "Veteran", ["No", "Yes"])}
+          {demo("disability", "Disability", ["No", "Yes"])}
+          {demo("orientation", "Sexual orientation", ["Heterosexual", "Gay or lesbian", "Bisexual"])}
+          {demo("transgender", "Transgender", ["No", "Yes"])}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 export function ApplySection({ state }: { state: SettingsState }) {
   const { settings, setSettings } = state;
   if (!settings) return null;
@@ -355,18 +761,27 @@ export function ApplySection({ state }: { state: SettingsState }) {
 
   return (
     <div className="grid gap-4">
+      <Card className="grid gap-2">
+        <H>How the extension answers a form</H>
+        <P>For each empty field, in this order: <b>1.</b> your CV (name, email, phone, links) → <b>2.</b> the question bank, using your facts below → <b>3.</b> your own answers → <b>4.</b> answers it learned earlier → <b>5.</b> the AI, only for what is still unanswered. Short questions go to the cheap model; open questions get 1–3 sentences, 60 words at most. Every AI answer is saved, so it is asked once.</P>
+      </Card>
+
+      <FactsCard state={state} />
+
       <Card className="grid gap-3">
-        <H>Application answers</H>
-        <P>Application forms ask things your CV does not say. The JobPilot browser extension uses these answers when it fills a form. A question with no answer here, in your CV or in the job description is left empty for you; nothing is made up.</P>
+        <H>Your own answers</H>
+        <P>For questions the bank does not cover. A question here matches the same question worded differently on a form (“Expected salary” also answers “What is your expected salary?”).</P>
         {rows.map((r, i) => (
           <div key={i} className="grid gap-2 sm:grid-cols-[1fr_1.4fr_auto] sm:items-end">
-            <Label label={i === 0 ? "Question" : ""}><Input value={r.question} onChange={(e) => setRow(i, { question: e.target.value })} placeholder="Expected salary" /></Label>
+            <Label label={i === 0 ? "Question" : ""}><Input value={r.question} onChange={(e) => setRow(i, { question: e.target.value })} placeholder="Do you have a driving licence?" /></Label>
             <Label label={i === 0 ? "Your answer" : ""}><Input value={r.answer} onChange={(e) => setRow(i, { answer: e.target.value })} placeholder="Leave empty to fill this one yourself each time" /></Label>
             <Button small variant="danger" onClick={() => setRows(rows.filter((_, n) => n !== i))}>Remove</Button>
           </div>
         ))}
         <div><Button small onClick={() => setRows([...rows, { question: "", answer: "" }])}>+ Add answer</Button></div>
       </Card>
+
+      <LearnedCard />
 
       <Card className="grid gap-2">
         <H>Browser extension</H>

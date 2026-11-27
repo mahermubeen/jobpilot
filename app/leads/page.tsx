@@ -7,7 +7,7 @@ import {
   Button, Check, Drawer, fitTone, Input, Label, LinkButton, Notice, PageHeader, Select, Stat,
   Tag, Textarea, useAction, useToast,
 } from "@/components/ui";
-import { api, copyText, fmtDate, timeInfo, useLoad } from "@/lib/client";
+import { api, copyText, fmtDate, jobLink, timeInfo, useLoad } from "@/lib/client";
 import { CALL_OUTCOMES, CONTACT_STATUSES } from "@/lib/fields";
 
 type Contact = {
@@ -278,7 +278,7 @@ export default function LeadsPage() {
                                   <Tag tone={fitTone(j.fit)}>{j.fit ?? "?"}</Tag>
                                   <Link href={`/jobs?open=${encodeURIComponent(j.id)}`} className="font-semibold hover:text-accent">{j.role}</Link>
                                   <Tag>{j.status}</Tag>
-                                  {j.link ? <a href={j.link} target="_blank" rel="noopener noreferrer" className="text-xs text-muted hover:text-accent">listing ↗</a> : null}
+                                  {j.link ? <a href={jobLink(j.link, j.id)} target="_blank" rel="noopener noreferrer" className="text-xs text-muted hover:text-accent">listing ↗</a> : null}
                                 </div>
                               )) : <span className="text-muted">No roles tracked.</span>}
                             </div>

@@ -39,7 +39,6 @@ export default function TodayPage() {
   const missing = [
     !data.setup.profile && "your CV",
     !data.setup.search && "job titles and locations",
-    !data.setup.apify && "an Apify token",
     !data.setup.gmail && "Gmail",
   ].filter(Boolean);
   const lastRun = runs?.runs[0];
@@ -51,7 +50,7 @@ export default function TodayPage() {
         sub={
           data.schedule.enabled
             ? `The daily run starts at ${data.schedule.time} while JobPilot is open. It prepares drafts and never sends email.`
-            : "The daily run is off. Use “Find new jobs” whenever you want fresh leads."
+            : "The daily run is off. Use “Find new jobs” whenever you want fresh leads. It looks at the past 24 hours unless you pick a longer window."
         }
       />
 

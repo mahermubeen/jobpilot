@@ -46,7 +46,11 @@ function RunsTab() {
 
 export default function SettingsPage() {
   const state = useSettings();
-  const [tab, setTab] = useState<(typeof TABS)[number]>("Search");
+  // ?tab=answers opens "Application answers" (the extension links there to show what it saved).
+  const [tab, setTab] = useState<(typeof TABS)[number]>(() => {
+    const want = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("tab");
+    return want === "answers" ? "Application answers" : want === "connections" ? "Connections" : "Search";
+  });
   const { busy, run } = useAction();
 
   if (state.error) return <Notice title="Could not load settings" tone="bad">{state.error}</Notice>;

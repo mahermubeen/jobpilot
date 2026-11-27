@@ -1,7 +1,7 @@
 /** Fields the browser may set on each record. Anything else in a request is ignored. */
 export const JOB_FIELDS = [
   "company", "role", "link", "status", "fit", "source", "pay", "tier", "mode",
-  "location", "description", "found", "applied", "followUp", "contact", "next",
+  "location", "description", "found", "postedAt", "applied", "followUp", "contact", "next",
   "notes", "cover", "flags",
 ] as const;
 

@@ -4,7 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { api, useLoad } from "@/lib/client";
-import { Button, Spinner, ToastProvider, useAction } from "./ui";
+import { POSTED_WITHIN, type PostedWithin } from "@/lib/sources/posted";
+import { Button, Select, Spinner, ToastProvider, useAction } from "./ui";
 
 type RunsData = {
   running: string | null;
@@ -28,11 +29,14 @@ export const useRuns = () => useContext(RunContext);
 
 function RunBar({ runs, reload }: { runs: RunsData | null; reload: () => void }) {
   const { busy, run } = useAction();
+  const [postedWithinDays, setPostedWithinDays] = useState<PostedWithin>(1);
   const current = runs?.runs.find((r) => r.id === runs.running);
   const last = runs?.runs[0];
   const start = (kind: "find" | "inbox") =>
     run(kind, async () => {
-      const r = await api<{ started: boolean }>("/api/runs", { body: { kind } });
+      const r = await api<{ started: boolean }>("/api/runs", {
+        body: kind === "find" ? { kind, postedWithinDays } : { kind },
+      });
       reload();
       return r.started ? undefined : "A run is already in progress.";
     });
@@ -58,6 +62,17 @@ function RunBar({ runs, reload }: { runs: RunsData | null; reload: () => void })
         <Button small onClick={() => start("inbox")} disabled={!!current} busy={busy === "inbox"}>
           Check replies
         </Button>
+        <Select
+          aria-label="Find jobs posted within"
+          className="w-auto py-1 text-xs"
+          value={postedWithinDays}
+          onChange={(e) => setPostedWithinDays(Number(e.target.value) as PostedWithin)}
+          disabled={!!current}
+        >
+          {POSTED_WITHIN.map((w) => (
+            <option key={w.days} value={w.days}>{w.label}</option>
+          ))}
+        </Select>
         <Button small variant="primary" onClick={() => start("find")} disabled={!!current} busy={busy === "find"}>
           Find new jobs
         </Button>

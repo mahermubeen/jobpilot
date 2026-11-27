@@ -5,7 +5,7 @@ import { useRuns } from "@/components/shell";
 import {
   Button, Card, Drawer, fitTone, Input, Label, Notice, PageHeader, Tag, Textarea, useAction,
 } from "@/components/ui";
-import { api, ApiError, fmtDate, useLoad } from "@/lib/client";
+import { api, ApiError, fmtDate, jobLink, useLoad } from "@/lib/client";
 
 type Item = {
   id: string; to: string; subject: string; body: string; status: string; error: string | null;
@@ -219,7 +219,7 @@ export default function OutboxPage() {
                 <iframe title="CV preview" src={`/api/outbox/${open.id}/cv#toolbar=0`} className="h-[520px] w-full rounded-lg border border-line bg-white" />
               </div>
             )}
-            {open.job?.link ? <a href={open.job.link} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-accent hover:underline">Open the job listing ↗</a> : null}
+            {open.job?.link ? <a href={jobLink(open.job.link, open.job.id)} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-accent hover:underline">Open the job listing ↗</a> : null}
           </>
         ) : null}
       </Drawer>
