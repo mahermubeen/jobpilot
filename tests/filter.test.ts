@@ -50,6 +50,7 @@ const filter: JobFilter = {
   minPay: { amount: 150000, currency: "PKR", period: "month" },
   dropUnpaid: true,
   homeCity: "Islamabad",
+  locations: [{ linkedin: "Islamabad, Pakistan" }, { linkedin: "Pakistan" }, { linkedin: "Worldwide" }],
 };
 const job = (over: Partial<Parameters<typeof rejectReason>[0]>) => ({
   role: "Full Stack Engineer",
@@ -92,7 +93,7 @@ describe("rejectReason", () => {
   it("drops onsite jobs elsewhere", () => {
     expect(rejectReason(job({ location: "Lahore" }), filter)).toMatch(/not in Islamabad/);
     expect(rejectReason(job({ location: "Karāchi, Sindh, Pakistan" }), filter)).toMatch(/not in Islamabad/);
-    expect(rejectReason(job({ location: "US only" }), filter)).toMatch(/not in Islamabad/);
+    expect(rejectReason(job({ location: "US only" }), filter)).toMatch(/Only for candidates in US/);
   });
 
   it("keeps remote jobs from anywhere", () => {
@@ -103,10 +104,38 @@ describe("rejectReason", () => {
     expect(rejectReason(job({ location: "Karachi", description: "Onsite, not remote." }), filter)).toMatch(/not in Islamabad/);
   });
 
-  it("keeps listings located only in a country", () => {
+  it("keeps listings located only in the home country", () => {
     expect(rejectReason(job({ location: "Pakistan" }), filter)).toBeNull();
-    expect(rejectReason(job({ location: "United States" }), filter)).toBeNull();
-    expect(rejectReason(job({ role: "Desenvolvedor React - Trabalho Remoto", location: "Campinas, Brazil" }), filter)).toBeNull();
+  });
+
+  it("drops remote jobs tied to another country or region", () => {
+    expect(rejectReason(job({ location: "San Diego County, CA", mode: "Remote" }), filter)).toMatch(/Only for candidates in CA/);
+    expect(rejectReason(job({ location: "United States" }), filter)).toMatch(/Only for candidates in united states/);
+    expect(rejectReason(job({ location: "Remote, US" }), filter)).toMatch(/Only for candidates in US/);
+    expect(rejectReason(job({ location: "Toronto, ON", mode: "Remote" }), filter)).toMatch(/Only for candidates in/);
+    expect(rejectReason(job({ location: "European Union", mode: "Remote" }), filter)).toMatch(/Only for candidates in/);
+    expect(rejectReason(job({ location: "San Francisco Bay Area", mode: "Remote" }), filter)).toMatch(/Only for candidates in/);
+    expect(rejectReason(job({ location: "Atlanta, GA", mode: "Remote" }), filter)).toMatch(/Only for candidates in/);
+    expect(rejectReason(job({ role: "Desenvolvedor React - Trabalho Remoto", location: "Campinas, Brazil" }), filter)).toMatch(/brazil/);
+  });
+
+  it("drops remote jobs whose description limits where you live", () => {
+    expect(rejectReason(job({ description: "US-based candidates only." }), filter)).toMatch(/Must be based in US/);
+    expect(rejectReason(job({ description: "You must be located in Canada to apply." }), filter)).toMatch(/canada/);
+    expect(rejectReason(job({ description: "Applicants must be authorized to work in the United States." }), filter)).toMatch(/united states/);
+    expect(rejectReason(job({ description: "Remote (EU only)" }), filter)).toMatch(/eu/);
+    expect(
+      rejectReason(job({ location: "San Diego County, CA", description: "Work from anywhere within the United States." }), filter),
+    ).toMatch(/Only for candidates in CA/);
+  });
+
+  it("keeps jobs open worldwide or in the home country", () => {
+    expect(rejectReason(job({ location: "Worldwide" }), filter)).toBeNull();
+    expect(rejectReason(job({ location: "Remote", description: "Join us and help our customers worldwide." }), filter)).toBeNull();
+    expect(rejectReason(job({ location: "United States", description: "Fully remote: work from anywhere in the world." }), filter)).toBeNull();
+    expect(rejectReason(job({ description: "You must be based in Pakistan or the UAE." }), filter)).toBeNull();
+    expect(rejectReason(job({ location: "Lahore", mode: "Remote" }), filter)).toBeNull();
+    expect(rejectReason(job({ location: "Lahore, Punjab, Pakistan", mode: "Remote", description: "Our team is based in Europe." }), filter)).toBeNull();
   });
 
   it("keeps jobs with no location, and every location when no home city is set", () => {

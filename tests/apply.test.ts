@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { matchJob, parseFields, profileAnswer, validateAnswer, type FormField } from "@/lib/apply/answers";
+import { pageJob, pageScope, parsePageJob } from "@/lib/apply/page-job";
 import { emptyProfile, type Profile } from "@/lib/cv/types";
 
 const profile: Profile = {
@@ -106,8 +107,45 @@ describe("matchJob", () => {
     expect(matchJob("https://www.linkedin.com/jobs/view/1111111111/", jobs)).toBeNull();
   });
 
+  it("matches an application form to its listing", () => {
+    const more = [
+      ...jobs,
+      { id: "w", link: "https://apply.workable.com/fable-1/j/2535E7A852" },
+      { id: "l", link: "https://jobs.lever.co/smartworking/3695831d-1595-4b15-9ae2-c0d38059a72c" },
+      { id: "s", link: "https://jobs.ashbyhq.com/acme/0f1e2d3c/application" },
+      { id: "i", link: "https://pk.linkedin.com/jobs/view/senior-react-native-developer-at-infosysta-4490885661" },
+    ];
+    expect(matchJob("https://apply.workable.com/fable-1/j/2535E7A852/apply/", more)?.id).toBe("w");
+    expect(matchJob("https://jobs.lever.co/smartworking/3695831d-1595-4b15-9ae2-c0d38059a72c/apply", more)?.id).toBe("l");
+    expect(matchJob("https://jobs.ashbyhq.com/acme/0f1e2d3c", more)?.id).toBe("s");
+    expect(matchJob("https://acme.com/careers/?gh_jid=123", more)?.id).toBe("b");
+    expect(matchJob("https://www.linkedin.com/jobs/view/4490885661/?trk=x", more)?.id).toBe("i");
+    // Another job on the same site, and a site's bare careers page, match nothing.
+    expect(matchJob("https://apply.workable.com/fable-1/j/9999999999/apply/", more)).toBeNull();
+    expect(matchJob("https://apply.workable.com/fable-1/", more)).toBeNull();
+  });
+
   it("returns null for unknown pages", () => {
     expect(matchJob("https://example.com/careers", jobs)).toBeNull();
     expect(matchJob("", jobs)).toBeNull();
+  });
+});
+
+describe("page jobs (forms that are not a saved job)", () => {
+  it("reads and trims what the page says", () => {
+    const p = parsePageJob({ url: "https://www.jethr.com/join/ai-engineer/?utm_source=linkedin#x", role: "  AI   Engineer \n", company: "Jet HR", description: "a\n\n\n\nb" });
+    expect(p).toEqual({ url: "https://www.jethr.com/join/ai-engineer/?utm_source=linkedin#x", role: "AI Engineer", company: "Jet HR", description: "a\n\nb" });
+    expect(pageJob(p!)).toMatchObject({ id: "page:jethr.com/join/ai-engineer", company: "Jet HR", role: "AI Engineer", description: "a\n\nb", cover: null });
+  });
+
+  it("ignores empty or wrong input", () => {
+    expect(parsePageJob(null)).toBeNull();
+    expect(parsePageJob("x")).toBeNull();
+    expect(parsePageJob({ url: "", role: " ", company: 3 })).toBeNull();
+  });
+
+  it("scopes by host and path, never the query", () => {
+    expect(pageScope("https://jobs.example.com/apply?id=1")).toBe("page:jobs.example.com/apply");
+    expect(pageScope("not a url?x=1")).toBe("page:not a url");
   });
 });
