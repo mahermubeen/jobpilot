@@ -14,6 +14,35 @@ const STEPS = [
   { title: "What to look for", sub: "Job titles and places. You can change these any time." },
 ] as const;
 
+type State = ReturnType<typeof useSettings>;
+type Ready = { settings: NonNullable<State["settings"]>; profile: NonNullable<State["profile"]> };
+
+/** What still blocks each step, or null when it can be saved. */
+const STEP_CHECKS: ((r: Ready) => string | null)[] = [
+  () => null,
+  ({ profile }) =>
+    !profile.name.trim() || !profile.email.trim() || !profile.experience.length ? "Add your name, email and at least one job." : null,
+  ({ settings }) =>
+    !settings.search.titles.some((t) => t.trim()) || !settings.search.locations.some((l) => l.label && l.linkedin)
+      ? "Add at least one job title and one location with a label and LinkedIn location."
+      : null,
+];
+
+const STEP_VIEWS = [ConnectionsSection, ProfileSection, SearchSection];
+
+function StepHeader({ step }: { step: number }) {
+  return (
+    <header className="grid gap-1">
+      <span className="text-sm font-extrabold tracking-tight text-accent">JobPilot setup · step {step + 1} of {STEPS.length}</span>
+      <h1 className="text-2xl font-extrabold tracking-tight">{STEPS[step].title}</h1>
+      <p className="text-muted">{STEPS[step].sub}</p>
+      <div className="mt-2 flex gap-1.5">
+        {STEPS.map((s, i) => <span key={s.title} className={"h-1.5 flex-1 rounded-full " + (i <= step ? "bg-accent" : "bg-sunk")} />)}
+      </div>
+    </header>
+  );
+}
+
 export default function SetupPage() {
   const state = useSettings();
   const router = useRouter();
@@ -21,19 +50,13 @@ export default function SetupPage() {
   const { busy, run } = useAction();
 
   if (state.error) return <Notice title="Could not load" tone="bad">{state.error}</Notice>;
-  if (!state.settings || !state.profile) return <Notice title="Loading…" />;
   const { settings, profile } = state;
+  if (!settings || !profile) return <Notice title="Loading…" />;
 
-  const problem =
-    step === 1 && (!profile.name.trim() || !profile.email.trim() || !profile.experience.length)
-      ? "Add your name, email and at least one job."
-      : step === 2 && (!settings.search.titles.filter((t) => t.trim()).length || !settings.search.locations.filter((l) => l.label && l.linkedin).length)
-        ? "Add at least one job title and one location with a label and LinkedIn location."
-        : null;
-
+  const problem = STEP_CHECKS[step]({ settings, profile });
+  const last = step === STEPS.length - 1;
   const next = () =>
     run("next", async () => {
-      const last = step === STEPS.length - 1;
       await state.save({ settings: { ...settings, setupDone: last ? true : settings.setupDone }, profile });
       if (!last) {
         setStep(step + 1);
@@ -44,27 +67,17 @@ export default function SetupPage() {
       router.push("/");
       return "Setup saved. The first search has started.";
     });
+  const View = STEP_VIEWS[step];
 
   return (
     <div className="mx-auto grid w-full max-w-3xl gap-4 pt-4">
-      <header className="grid gap-1">
-        <span className="text-sm font-extrabold tracking-tight text-accent">JobPilot setup · step {step + 1} of {STEPS.length}</span>
-        <h1 className="text-2xl font-extrabold tracking-tight">{STEPS[step].title}</h1>
-        <p className="text-muted">{STEPS[step].sub}</p>
-        <div className="mt-2 flex gap-1.5">
-          {STEPS.map((s, i) => <span key={s.title} className={"h-1.5 flex-1 rounded-full " + (i <= step ? "bg-accent" : "bg-sunk")} />)}
-        </div>
-      </header>
-
-      {step === 0 ? <ConnectionsSection state={state} /> : null}
-      {step === 1 ? <ProfileSection state={state} /> : null}
-      {step === 2 ? <SearchSection state={state} /> : null}
-
+      <StepHeader step={step} />
+      <View state={state} />
       <Card className="sticky bottom-3 flex flex-wrap items-center gap-2">
         {step ? <Button onClick={() => setStep(step - 1)}>Back</Button> : null}
         <span className="flex-1 text-sm text-warn">{problem}</span>
         <Button variant="primary" busy={busy === "next"} disabled={!!problem} onClick={next}>
-          {step === STEPS.length - 1 ? "Finish and find jobs" : "Save and continue"}
+          {last ? "Finish and find jobs" : "Save and continue"}
         </Button>
       </Card>
     </div>
